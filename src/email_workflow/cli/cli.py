@@ -1779,32 +1779,39 @@ def _github_menu(project_root, full_name, wf_path, preset=None):
                 ))
 
         elif choice == "3":
+            # JSON rather than gh's --template: a Go template renders the run
+            # id as 3.5449167057e+10, which is not an id anyone can paste.
             ok, out = _shell(
                 ["gh", "run", "list", "--limit", "10",
-                 "--json", "status,conclusion,createdAt,displayTitle,databaseId",
-                 "--template",
-                 "{{range .}}{{.createdAt}}  {{.status}}  {{.conclusion}}  {{.databaseId}}\n{{end}}"],
+                 "--json", "status,conclusion,createdAt,databaseId"],
                 cwd=project_root,
             )
-            if not ok or not out.strip():
+            try:
+                runs = json.loads(out) if ok and out.strip() else []
+            except ValueError:
+                runs = []
+            if not runs:
                 console.print("[dim]No runs yet - choose 2 to start one.[/dim]\n")
                 continue
+
             table = Table(title="Runs on GitHub", border_style="cyan")
             table.add_column("When (UTC)")
             table.add_column("State")
             table.add_column("Result")
             table.add_column("Run id", style="dim")
-            for line in out.strip().splitlines():
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                when, status, result, run_id = parts[0], parts[1], parts[2], parts[3]
+            for entry in runs:
+                result = entry.get("conclusion") or "-"
                 colour = {"success": "green", "failure": "red"}.get(result, "yellow")
-                table.add_row(when[:16].replace("T", " "), status,
-                              f"[{colour}]{result}[/{colour}]", run_id)
+                table.add_row(
+                    str(entry.get("createdAt", ""))[:16].replace("T", " "),
+                    str(entry.get("status", "")),
+                    f"[{colour}]{result}[/{colour}]",
+                    str(int(entry.get("databaseId", 0))),
+                )
             console.print(table)
             console.print(
-                f"[dim]Details of one run:  gh run view <run id> --repo {full_name}[/dim]\n"
+                f"[dim]Why one of them failed:  "
+                f"gh run view <run id> --log-failed --repo {full_name}[/dim]\n"
             )
 
         elif choice == "4":
