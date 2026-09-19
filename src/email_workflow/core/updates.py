@@ -167,6 +167,45 @@ def apply_update(new_tree: Path, project_root: Path) -> Tuple[int, List[str]]:
     return copied, problems
 
 
+def keep_your_schedule(project_root: Path) -> Optional[str]:
+    """The cron line this copy runs on, read before an update replaces it.
+
+    The workflow file is code and has to be updated, but the time inside it is
+    a choice somebody made. An update that silently moved the daily run to
+    whatever hour upstream happens to ship would be the same bug as one that
+    reset your settings, just harder to notice - the report would simply start
+    arriving at the wrong time.
+    """
+    from email_workflow.core.scheduling import cron_in_workflow
+
+    path = project_root / ".github" / "workflows" / "email-workflow.yml"
+    if not path.exists():
+        return None
+    try:
+        return cron_in_workflow(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def restore_your_schedule(project_root: Path, cron: Optional[str]) -> bool:
+    """Put the time back after the workflow file has been replaced."""
+    from email_workflow.core.scheduling import cron_in_workflow, workflow_with_cron
+
+    if not cron:
+        return False
+    path = project_root / ".github" / "workflows" / "email-workflow.yml"
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+        if cron_in_workflow(text) == cron:
+            return False
+        path.write_text(workflow_with_cron(text, cron), encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
 def recent_subjects(new_tree: Path, limit: int = 15) -> List[str]:
     """What changed upstream, in the words of whoever changed it."""
     ok, out = _git(["log", f"-{limit}", "--pretty=format:%s"], cwd=new_tree)

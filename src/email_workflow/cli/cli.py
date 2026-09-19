@@ -39,7 +39,9 @@ from email_workflow.core.updates import (
     apply_update,
     changed_files,
     fetch_upstream,
+    keep_your_schedule,
     recent_subjects,
+    restore_your_schedule,
     update_available,
     write_state,
 )
@@ -2385,7 +2387,12 @@ def update(
             console.print("[dim]Nothing changed.[/dim]")
             return
 
+        # The workflow file is code and gets replaced, but the hour inside
+        # it is a choice somebody made. Put it back afterwards.
+        your_cron = keep_your_schedule(project_root)
         copied, problems = apply_update(new_tree, project_root)
+        if restore_your_schedule(project_root, your_cron):
+            console.print("[dim]kept your daily run at the hour you chose[/dim]")
         for line in problems:
             console.print(f"[yellow]could not replace {line}[/yellow]")
         write_state(project_root, head, source)

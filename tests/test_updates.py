@@ -188,3 +188,44 @@ def test_the_recorded_version_survives_a_round_trip(project):
 def test_a_corrupt_state_file_is_not_fatal(project):
     (project / ".update-state.json").write_text("{ not json", encoding="utf-8")
     assert read_state(project) == {}
+
+
+# --- the hour you chose is a choice, not code -------------------------------
+
+def workflow(root: Path, cron: str):
+    path = root / ".github" / "workflows" / "email-workflow.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('on:\n  schedule:\n    - cron: "%s"\n' % cron, encoding="utf-8")
+    return path
+
+
+def test_an_update_does_not_move_your_daily_run(project, upstream):
+    """The workflow file has to be updated - but not the time inside it."""
+    from email_workflow.core.updates import keep_your_schedule, restore_your_schedule
+
+    mine = workflow(project, "0 8 * * *")      # the hour this person chose
+    workflow(upstream, "0 6 * * *")            # whatever upstream ships
+
+    kept = keep_your_schedule(project)
+    apply_update(upstream, project)
+    assert '"0 6 * * *"' in mine.read_text(encoding="utf-8"), "test setup"
+
+    assert restore_your_schedule(project, kept) is True
+    assert '"0 8 * * *"' in mine.read_text(encoding="utf-8"), (
+        "the update silently moved the daily run to a different hour"
+    )
+
+
+def test_nothing_to_restore_is_not_an_error(project):
+    from email_workflow.core.updates import keep_your_schedule, restore_your_schedule
+
+    assert keep_your_schedule(project) is None
+    assert restore_your_schedule(project, None) is False
+    assert restore_your_schedule(project, "0 8 * * *") is False
+
+
+def test_the_same_hour_is_left_alone(project):
+    from email_workflow.core.updates import restore_your_schedule
+
+    workflow(project, "0 8 * * *")
+    assert restore_your_schedule(project, "0 8 * * *") is False, "rewrote for nothing"
