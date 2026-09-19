@@ -14,6 +14,14 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.prompt import Prompt, Confirm
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from email_workflow.models.config import AppConfig, AIMode
 from email_workflow.models.email import EmailMessage, EmailCategory, ImportanceLevel, UrgencyLevel, DecisionOption, SenderInfo
@@ -38,6 +46,7 @@ from email_workflow.core.updates import (
     PROTECTED,
     apply_update,
     changed_files,
+    files_to_copy,
     fetch_upstream,
     keep_your_schedule,
     recent_subjects,
@@ -76,6 +85,18 @@ app = typer.Typer(
     add_completion=False,
     invoke_without_command=True,
 )
+
+# Windows still hands a process a legacy code page when its output is
+# redirected, and the tables, the progress bar and the spinner are all
+# drawn with characters that code page has no room for. "email-workflow
+# run > log.txt" then died on a UnicodeEncodeError rather than on anything
+# to do with email. Ask for UTF-8 and never let an unprintable character be
+# the reason a run fails.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 console = Console()
 
@@ -762,21 +783,40 @@ def _worker_count(config, ai_provider, email_count: int) -> int:
     return max(1, min(wanted, lanes, email_count, MAX_PARALLEL_WORKERS))
 
 
+def _progress(unit_note=""):
+    """The one progress bar this app uses, so every job looks the same.
+
+    A spinner says "still alive". A bar says how far through and how much
+    longer - which is what you actually want to know when a full inbox is
+    being worked through one AI call at a time.
+    """
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(bar_width=None, complete_style="green", finished_style="green"),
+        MofNCompleteColumn(),
+        TextColumn(unit_note) if unit_note else TextColumn(""),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    )
+
+
 def _process_one_at_a_time(pipeline, emails, provider_name, model_name) -> list:
     results = []
     total = len(emails)
-    for idx, email in enumerate(emails, 1):
-        # One email can be several AI calls and a rate-limit wait. Without a
-        # line on screen the whole time the app just looks frozen - and it is
-        # not obvious when it has moved on to the next email either.
-        with console.status(
-            f"[bold cyan]({idx}/{total}) thinking about[/bold cyan] "
-            f'"{_short(email.subject)}" [dim]- {provider_name} / {model_name}[/dim]',
-            spinner="dots",
-        ):
+    with _progress(f"[dim]{provider_name} / {model_name}[/dim]") as bar:
+        job = bar.add_task("starting...", total=total)
+        for idx, email in enumerate(emails, 1):
+            # One email can be several AI calls and a rate-limit wait. Without
+            # something moving, the app looks frozen - and it is not obvious
+            # when it has moved on to the next email either.
+            bar.update(job, description=f'"{_short(email.subject, 40)}"')
             res = pipeline.process_email(email)
-        results.append(res)
-        render_stage_result(idx, res)
+            results.append(res)
+            bar.advance(job)
+            render_stage_result(idx, res)
+        bar.update(job, description="done")
     return results
 
 
@@ -790,26 +830,21 @@ def _process_together(pipeline, emails, workers: int) -> list:
     """
     total = len(emails)
     results = [None] * total
-    finished = 0
 
-    def label() -> str:
-        return (
-            f"[bold cyan]{finished}/{total} done[/bold cyan] [dim]- "
-            f"{min(workers, total - finished)} being worked on, "
-            f"{workers} keys[/dim]"
-        )
-
-    with console.status(label(), spinner="dots") as status:
+    with _progress(f"[dim]{workers} keys[/dim]") as bar:
+        job = bar.add_task(f"{min(workers, total)} at a time", total=total)
         with ThreadPoolExecutor(max_workers=workers) as pool:
             jobs = {
                 pool.submit(pipeline.process_email, email): i
                 for i, email in enumerate(emails)
             }
-            for job in as_completed(jobs):
-                index = jobs[job]
-                results[index] = job.result()
-                finished += 1
-                status.update(label())
+            for job_done in as_completed(jobs):
+                index = jobs[job_done]
+                results[index] = job_done.result()
+                bar.advance(job)
+                left = total - int(bar.tasks[0].completed)
+                bar.update(job, description=f"{min(workers, left)} at a time"
+                           if left else "done")
                 render_stage_result(index + 1, results[index])
 
     return results
@@ -2390,7 +2425,16 @@ def update(
         # The workflow file is code and gets replaced, but the hour inside
         # it is a choice somebody made. Put it back afterwards.
         your_cron = keep_your_schedule(project_root)
-        copied, problems = apply_update(new_tree, project_root)
+        with _progress() as bar:
+            todo = files_to_copy(new_tree)
+            job = bar.add_task("replacing files", total=len(todo))
+            copied, problems = apply_update(
+                new_tree, project_root,
+                on_file=lambda rel: bar.update(
+                    job, advance=1, description=rel.name[:28]
+                ),
+            )
+            bar.update(job, description="done")
         if restore_your_schedule(project_root, your_cron):
             console.print("[dim]kept your daily run at the hour you chose[/dim]")
         for line in problems:

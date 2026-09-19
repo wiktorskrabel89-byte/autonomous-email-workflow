@@ -142,13 +142,13 @@ def changed_files(new_tree: Path, project_root: Path) -> List[str]:
     return changed
 
 
-def apply_update(new_tree: Path, project_root: Path) -> Tuple[int, List[str]]:
-    """Copy the new code in. Returns (how many files, what went wrong).
+def files_to_copy(new_tree: Path) -> List[Path]:
+    """Every file an update would deliver, protected names already removed.
 
-    Deliberately copy-in rather than replace-the-folder: a file you added
-    yourself is left alone, and nothing on the protected list is opened at all.
+    One place decides what is copyable, so counting for a progress bar and
+    doing the copying can never disagree about what is about to happen.
     """
-    copied, problems = 0, []
+    wanted = []
     for source in sorted(new_tree.rglob("*")):
         if not source.is_file():
             continue
@@ -157,13 +157,30 @@ def apply_update(new_tree: Path, project_root: Path) -> Tuple[int, List[str]]:
             continue
         if relative.as_posix() in PROTECTED or relative.name in PROTECTED:
             continue
+        wanted.append(relative)
+    return wanted
+
+
+def apply_update(new_tree: Path, project_root: Path, on_file=None) -> Tuple[int, List[str]]:
+    """Copy the new code in. Returns (how many files, what went wrong).
+
+    Deliberately copy-in rather than replace-the-folder: a file you added
+    yourself is left alone, and nothing on the protected list is opened at all.
+
+    on_file(relative_path) is called after each one, so a caller can draw a
+    progress bar without this module knowing anything about how it is drawn.
+    """
+    copied, problems = 0, []
+    for relative in files_to_copy(new_tree):
         target = project_root / relative
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            shutil.copy2(new_tree / relative, target)
             copied += 1
         except OSError as e:
             problems.append(f"{relative.as_posix()}: {e}")
+        if on_file:
+            on_file(relative)
     return copied, problems
 
 
