@@ -184,6 +184,29 @@ def apply_update(new_tree: Path, project_root: Path, on_file=None) -> Tuple[int,
     return copied, problems
 
 
+def locally_modified(project_root: Path) -> List[str]:
+    """Tracked files changed here and not committed.
+
+    An update replaces files wholesale. If you have been editing the code -
+    fixing something yourself, or mid-change - those edits are simply gone, and
+    an "update" that quietly deletes your own work is worse than no update.
+    Anything not under git cannot be checked, and then the honest answer is an
+    empty list rather than a false reassurance.
+    """
+    ok, out = _git(["status", "--porcelain"], cwd=project_root)
+    if not ok:
+        return []
+    changed = []
+    for raw in out.splitlines():
+        if len(raw) < 4:
+            continue
+        marks, name = raw[:2], raw[3:].strip().strip('"')
+        if "?" in marks:          # untracked: an update never deletes those
+            continue
+        changed.append(name)
+    return changed
+
+
 def keep_your_schedule(project_root: Path) -> Optional[str]:
     """The cron line this copy runs on, read before an update replaces it.
 

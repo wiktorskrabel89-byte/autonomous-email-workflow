@@ -417,3 +417,69 @@ def test_keys_are_not_uploaded_without_a_yes(project, monkeypatch):
 
     sent = [c for c in calls if c[:3] == ["gh", "secret", "set"]]
     assert not sent, "keys went to GitHub without a yes"
+
+def test_the_menu_offers_updating(project, monkeypatch):
+    """A command nobody can find is a command nobody uses. Both the scheduler
+    and the updater were written, shipped, and then missing from this list."""
+    write_config(project, require_login=False)
+    opened = []
+    monkeypatch.setattr(cli_module, "update", lambda check=False: opened.append(check))
+
+    result = runner.invoke(cli_module.app, [], input="12\n\n13\n")
+
+    assert "Update the App" in result.output
+    assert opened == [False], "option 12 did not open the updater"
+
+
+def test_exit_is_the_last_number_and_it_works(project):
+    write_config(project, require_login=False)
+    result = runner.invoke(cli_module.app, [], input="13\n")
+    assert "Goodbye" in result.output
+
+
+def test_every_number_the_menu_shows_is_accepted(project):
+    """Guards the numbering itself. Adding an entry and forgetting the choices
+    list leaves an option printed on screen that the app then refuses."""
+    import re
+
+    write_config(project, require_login=False)
+    result = runner.invoke(cli_module.app, [], input="13\n")
+    shown = {int(n) for n in re.findall(r"(\d+)\.\s", result.output)}
+    assert shown, "no numbered options were printed"
+
+    highest = max(shown)
+    assert shown == set(range(1, highest + 1)), (
+        f"the menu numbering has a gap or a duplicate: {sorted(shown)}"
+    )
+
+    refused = runner.invoke(cli_module.app, [], input=f"{highest + 1}\n13\n")
+    assert "Goodbye" in refused.output, (
+        "a number past the end of the menu was accepted"
+    )
+
+def test_the_wizard_ends_by_offering_the_sending_settings(project, monkeypatch):
+    """The wizard sets up WHO it talks to. It said nothing about what it is
+    allowed to DO with the mailbox - and that is the part that decides whether
+    real email goes out in your name."""
+    write_config(project, require_login=False)
+    opened = []
+    monkeypatch.setattr(cli_module, "settings", lambda: opened.append(True))
+    monkeypatch.setattr(cli_module, "dashboard", lambda: None)
+    monkeypatch.setattr(cli_module, "get_ai_provider", lambda *a, **k: None)
+
+    result = runner.invoke(cli_module.app, ["setup"], input="2\n\n\n\n1\ny\n")
+
+    assert "what is it allowed to do" in result.output.lower()
+    assert opened == [True], "the wizard finished without offering them"
+
+
+def test_the_wizard_takes_no_for_an_answer(project, monkeypatch):
+    write_config(project, require_login=False)
+    opened = []
+    monkeypatch.setattr(cli_module, "settings", lambda: opened.append(True))
+    monkeypatch.setattr(cli_module, "dashboard", lambda: None)
+
+    result = runner.invoke(cli_module.app, ["setup"], input="2\n\n\n\n1\nn\n")
+
+    assert opened == [], "it opened the settings after a no"
+    assert "email-workflow settings" in result.output

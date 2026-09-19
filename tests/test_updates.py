@@ -229,3 +229,41 @@ def test_the_same_hour_is_left_alone(project):
 
     workflow(project, "0 8 * * *")
     assert restore_your_schedule(project, "0 8 * * *") is False, "rewrote for nothing"
+
+def test_uncommitted_work_is_named_before_an_update_overwrites_it(tmp_path):
+    """An update replaces files wholesale. Work of your own that is not
+    committed would simply be gone - and an update that quietly deletes your
+    own work is worse than no update."""
+    import subprocess
+    from email_workflow.core.updates import locally_modified
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True)
+
+    git("init")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "code.py").write_text("original\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-m", "first")
+
+    assert locally_modified(tmp_path) == [], "a clean checkout has nothing at risk"
+
+    (tmp_path / "code.py").write_text("my own fix\n", encoding="utf-8")
+    assert "code.py" in locally_modified(tmp_path)
+
+
+def test_a_file_you_never_committed_is_not_at_risk(tmp_path):
+    """An update only replaces what it ships, so an untracked file of yours is
+    never in danger and must not be reported as if it were."""
+    import subprocess
+    from email_workflow.core.updates import locally_modified
+
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "my_notes.txt").write_text("mine", encoding="utf-8")
+    assert locally_modified(tmp_path) == []
+
+
+def test_somewhere_that_is_not_a_repository_says_nothing(tmp_path):
+    from email_workflow.core.updates import locally_modified
+    assert locally_modified(tmp_path) == []

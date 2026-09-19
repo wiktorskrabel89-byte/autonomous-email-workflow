@@ -49,6 +49,7 @@ from email_workflow.core.updates import (
     files_to_copy,
     fetch_upstream,
     keep_your_schedule,
+    locally_modified,
     recent_subjects,
     restore_your_schedule,
     update_available,
@@ -325,11 +326,13 @@ def interactive_main_menu():
             "[bold yellow]10.[/bold yellow] Test Notification & Escalation Report Delivery\n"
             "[bold yellow]11.[/bold yellow] Sending & Mailbox Settings "
             "[dim](send replies? keep drafts?)[/dim]\n"
-            "[bold yellow]12.[/bold yellow] Exit\n"
+            "[bold yellow]12.[/bold yellow] Update the App "
+            "[dim](get the newest version, keeps your settings)[/dim]\n"
+            "[bold yellow]13.[/bold yellow] Exit\n"
         )
         console.print(Panel(menu_text, border_style="cyan"))
 
-        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"], default="1")
+        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"], default="1")
 
         if choice == "1":
             console.clear()
@@ -386,6 +389,10 @@ def interactive_main_menu():
             settings()
             Prompt.ask("\nPress Enter to return to main menu")
         elif choice == "12":
+            console.clear()
+            update(check=False)
+            Prompt.ask("\nPress Enter to return to main menu")
+        elif choice == "13":
             console.print("[bold green]Goodbye![/bold green]")
             sys.exit(0)
 
@@ -604,6 +611,41 @@ def setup():
 
     console.print("\n[bold green][OK] Configuration updated in config.yaml and .env![/bold green]\n")
     dashboard()
+
+    # The wizard has set up WHO it talks to. It has said nothing about WHAT it
+    # is allowed to do with your mailbox, and those are the settings that
+    # decide whether real email goes out in your name. Ending here would leave
+    # someone thinking they had finished when they had not seen the question.
+    console.print(Panel(
+        "[bold]One thing left: what is it allowed to do?[/bold]\n\n"
+        "Right now it knows which AI to use and which mailbox to read. It does "
+        "not yet know whether it may [bold]send replies for you[/bold], keep "
+        "drafts, take routine mail out of your inbox, or star what needs you.\n\n"
+        "[dim]Sending is off until you switch it on, so nothing leaves your "
+        "mailbox in the meantime. You can change any of this later with "
+        "'email-workflow settings'.[/dim]",
+        title="Sending & mailbox behaviour",
+        border_style="cyan",
+    ))
+
+    if Confirm.ask("Set those now?", default=True):
+        console.print()
+        settings()
+    else:
+        console.print(
+            "[dim]Left as they are. Run [bold]email-workflow settings[/bold] "
+            "whenever you want them.[/dim]"
+        )
+
+    console.print(Panel(
+        "[bold green]Setup finished.[/bold green]\n\n"
+        "  [bold]email-workflow demo[/bold]      see it work, no key needed\n"
+        "  [bold]email-workflow run[/bold]       process your inbox now\n"
+        "  [bold]email-workflow schedule[/bold]  run it daily, here or on GitHub\n"
+        "  [bold]email-workflow facts[/bold]     what it may say about you",
+        title="What now",
+        border_style="green",
+    ))
 
 @app.command()
 def test_report(
@@ -2418,7 +2460,22 @@ def update(
             border_style="yellow",
         ))
 
-        if not Confirm.ask("Update now?", default=True):
+        # An update replaces files. Work of your own that is not committed
+        # would simply be gone, so it is named, and the default flips to no.
+        yours = [f for f in locally_modified(project_root)
+                 if any(f.replace(chr(92), "/") in line for line in changes)]
+        if yours:
+            console.print(Panel(
+                "[bold red]You have changes here that are not committed, "
+                "and the update would overwrite them:[/bold red]\n\n  "
+                + "\n  ".join(yours) + "\n\n"
+                "[dim]Commit or copy them somewhere first. This is your own "
+                "work, not something the project can give back.[/dim]",
+                title="Your edits would be lost",
+                border_style="red",
+            ))
+
+        if not Confirm.ask("Update now?", default=not yours):
             console.print("[dim]Nothing changed.[/dim]")
             return
 
