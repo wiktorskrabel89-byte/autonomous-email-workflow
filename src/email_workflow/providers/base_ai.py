@@ -5,6 +5,7 @@ from email_workflow.models.analysis import (
     EmailAnalysis,
     DecisionSupportOutput,
     ReplyGenerationOutput,
+    KnownFactsMerge,
     ReplyReviewOutput,
 )
 from email_workflow.models.state import ThreadState
@@ -291,6 +292,28 @@ class AIProvider(ABC):
     ) -> ReplyGenerationOutput:
         """Generate grounded email reply."""
         pass
+
+    def organise_facts(self, existing: str, addition: str) -> KnownFactsMerge:
+        """Fold new information into the knowledge base and tidy it.
+
+        Not abstract, and the default simply appends: a provider that cannot do
+        this must never be the reason a fact goes missing. Losing a line here
+        means the assistant stops knowing something true about a real person.
+        """
+        from email_workflow.core.known_facts import append_fact, facts_as_lines
+        return KnownFactsMerge(
+            facts=facts_as_lines(append_fact(existing, addition)),
+            what_changed="added as written (no model available to tidy it)",
+        )
+
+    def suggest_facts(self, emails: str, existing: str = "") -> KnownFactsMerge:
+        """Facts about the owner that their own mail states plainly.
+
+        The default suggests nothing. A provider that cannot read the mail has
+        nothing to offer here, and inventing something would be far worse than
+        staying quiet.
+        """
+        return KnownFactsMerge(facts=[], what_changed="no model available")
 
     def review_reply(
         self,

@@ -73,6 +73,15 @@ class ReplyReviewOutput(BaseModel):
     invented_details: List[str] = Field(default_factory=list)
     confidence: float = 1.0
 
+class KnownFactsMerge(BaseModel):
+    """A knowledge base with one new piece of information folded into it."""
+
+    facts: List[str] = Field(default_factory=list)
+    what_changed: str = ""
+    # Old lines the new information genuinely supersedes. Anything else that
+    # goes missing is a mistake, not an edit, and the caller checks for it.
+    replaced: List[str] = Field(default_factory=list)
+
 class FinalValidationResult(BaseModel):
     valid: bool
     failure_reasons: List[str] = Field(default_factory=list)

@@ -267,7 +267,7 @@ def passwd():
         console.print("[bold green][OK] Password changed.[/bold green]")
         return
 
-from email_workflow.core.known_facts import KnownFactsManager
+from email_workflow.core.known_facts import KnownFactsManager, facts_lost
 
 def interactive_main_menu():
     """Interactive main menu with numbered options."""
@@ -1229,6 +1229,8 @@ def settings():
                   "routine mail leaves the inbox")
     table.add_row("Star important", show(mail.star_important),
                   f"star and label '{mail.important_label}'")
+    table.add_row("Learn facts from email", show(config.automation.learn_facts_from_email),
+                  "suggest things about you from your own mail")
     console.print(table)
 
     if not Confirm.ask("\nChange these?", default=False):
@@ -1286,6 +1288,19 @@ def settings():
         mail.important_label = Prompt.ask(
             "Label to put on it", default=mail.important_label
         )
+
+    # --- learning about you ------------------------------------------------
+    if not config.automation.learn_facts_from_email:
+        console.print(
+            "\n[dim]With this on, 'email-workflow facts' can read your recent "
+            "mail and suggest things to record about you. It only ever "
+            "suggests: you pick each one, and nothing is saved until you do. "
+            "A wrong fact would be stated to real people as true.[/dim]"
+        )
+    config.automation.learn_facts_from_email = Confirm.ask(
+        "Let the AI suggest facts about you from your email?",
+        default=config.automation.learn_facts_from_email,
+    )
 
     import yaml
 
@@ -1523,30 +1538,233 @@ def replay(
 
     render_thread_replay(thread_id, thread_state.model_dump(), events)
 
+def _facts_ai(config):
+    """A model to tidy the facts with, or the one that just appends.
+
+    Never fatal: not being able to reach a model is a reason to add the line
+    as written, not a reason to refuse to record it.
+    """
+    try:
+        return get_ai_provider(config)
+    except Exception:
+        return FakeAIProvider()
+
+
+def _save_facts(mgr, new_text, old_text):
+    """Write the file, keeping the previous version next to it.
+
+    This file is the only thing the assistant may state as fact about you, and
+    it took real effort to write. A copy costs nothing and has already been
+    needed once.
+    """
+    backup = mgr.file_path.with_suffix(mgr.file_path.suffix + ".bak")
+    try:
+        backup.write_text(old_text, encoding="utf-8")
+    except OSError:
+        backup = None
+    mgr.save_facts(new_text)
+    if backup:
+        console.print(f"[dim]previous version kept as {backup.name}[/dim]")
+
+
+def _confirm_and_save(mgr, current, merged, verb="Save this"):
+    """Show what would change, refuse to lose anything quietly, then save."""
+    new_text = "\n".join(line.strip() for line in merged.facts if line.strip()) + "\n"
+    if not new_text.strip():
+        console.print("[bold red]The model returned nothing. Your facts are "
+                      "untouched.[/bold red]")
+        return False
+
+    lost = facts_lost(current, new_text, merged.replaced)
+
+    console.print(Panel(new_text.rstrip(), title="How it would look",
+                        border_style="cyan"))
+    if merged.what_changed:
+        console.print(f"[dim]{merged.what_changed}[/dim]")
+    if merged.replaced:
+        console.print("[yellow]Updated, replacing:[/yellow]")
+        for line in merged.replaced:
+            console.print(f"  [dim]{line}[/dim]")
+
+    if lost:
+        console.print(Panel(
+            "[bold red]These would disappear, and nothing said they were "
+            "being replaced:[/bold red]\n\n  " + "\n  ".join(lost) + "\n\n"
+            "That is the model losing something, not tidying it.",
+            title="Careful",
+            border_style="red",
+        ))
+        if not Confirm.ask("Save anyway and lose those?", default=False):
+            console.print("[dim]Nothing changed.[/dim]")
+            return False
+    elif not Confirm.ask(f"{verb}?", default=True):
+        console.print("[dim]Nothing changed.[/dim]")
+        return False
+
+    _save_facts(mgr, new_text, current)
+    console.print("[bold green][OK] Saved.[/bold green]")
+    return True
+
+
+def _learn_from_email(mgr, config, current):
+    """Let the AI propose facts from your own mail. It only ever proposes."""
+    try:
+        provider = get_email_provider(config.email)
+        emails = provider.fetch_unprocessed_emails()
+    except Exception as e:
+        console.print(f"[bold red]Could not read the mailbox:[/bold red] {e}")
+        return
+
+    if not emails:
+        console.print("[dim]No unread mail to learn from.[/dim]")
+        return
+
+    # Enough to be useful, bounded so one enormous newsletter cannot swallow
+    # the whole prompt - and the cost of the call with it.
+    looked_at = emails[:15]
+    blob = "\n\n".join(
+        f"From: {m.sender.name} <{m.sender.email}>\nSubject: {m.subject}\n\n"
+        f"{(m.body or '')[:800]}"
+        for m in looked_at
+    )
+
+    with console.status(f"[cyan]reading {len(looked_at)} email(s)...", spinner="dots"):
+        suggested = _facts_ai(config).suggest_facts(blob, current)
+
+    candidates = [line.strip() for line in suggested.facts if line.strip()]
+    if not candidates:
+        console.print(Panel(
+            "Nothing in your recent mail states a fact about you plainly "
+            "enough to be worth recording.\n\n"
+            "[dim]That is the right answer far more often than not - a guessed "
+            "fact would be repeated to real people as if it were true.[/dim]",
+            title="Nothing to add",
+            border_style="cyan",
+        ))
+        return
+
+    console.print(Panel(
+        "\n".join(f"[bold yellow]{n}.[/bold yellow] {line}"
+                  for n, line in enumerate(candidates, 1)),
+        title=f"Suggested from {len(looked_at)} email(s) - nothing is saved yet",
+        border_style="yellow",
+    ))
+    console.print("[dim]Check each one. The assistant will state these to real "
+                  "people as fact.[/dim]")
+
+    picked_text = Prompt.ask(
+        "Which do you want to keep? (numbers like 1,3 - or 'all', or 'none')",
+        default="none",
+    ).strip().lower()
+
+    if picked_text in ("none", ""):
+        console.print("[dim]Nothing kept.[/dim]")
+        return
+    if picked_text == "all":
+        chosen = candidates
+    else:
+        chosen = []
+        for piece in picked_text.replace(" ", "").split(","):
+            if piece.isdigit() and 1 <= int(piece) <= len(candidates):
+                chosen.append(candidates[int(piece) - 1])
+        if not chosen:
+            console.print("[yellow]Nothing recognised in that answer - nothing "
+                          "kept.[/yellow]")
+            return
+
+    with console.status("[cyan]filing them in...", spinner="dots"):
+        merged = _facts_ai(config).organise_facts(current, "\n".join(chosen))
+    _confirm_and_save(mgr, current, merged, verb="Add these")
+
+
+def _add_to_facts(mgr, config, current):
+    console.print(
+        "\n[bold]What should it know?[/bold] One thing, in your own words - "
+        "the AI files it in the right place.\n"
+        "[dim]e.g. \"my phone is 600 100 200\" or \"I don't work Fridays\"[/dim]"
+    )
+    addition = Prompt.ask("New information").strip()
+    if not addition:
+        console.print("[dim]Nothing typed.[/dim]")
+        return
+
+    with console.status("[cyan]filing it in...", spinner="dots"):
+        merged = _facts_ai(config).organise_facts(current, addition)
+
+    _confirm_and_save(mgr, current, merged)
+
+
+def _rewrite_facts(mgr, current):
+    console.print(Panel(
+        "[bold yellow]This replaces everything above.[/bold yellow]\n\n"
+        "To add one thing without losing the rest, go back and choose "
+        "[bold]1[/bold] instead.",
+        border_style="yellow",
+    ))
+    if not Confirm.ask("Replace the whole knowledge base?", default=False):
+        return
+
+    console.print("[yellow]Type the new knowledge base. Press Enter twice when "
+                  "finished:[/yellow]")
+    lines = []
+    while True:
+        line = input()
+        if not line and lines and not lines[-1]:
+            break
+        lines.append(line)
+    new_text = "\n".join(lines).strip()
+    if not new_text:
+        console.print("[dim]Nothing typed - your facts are untouched.[/dim]")
+        return
+
+    _save_facts(mgr, new_text + "\n", current)
+    console.print("[bold green][OK] Replaced.[/bold green]")
+
+
 @app.command()
 def facts():
-    """View or edit personal Knowledge Base & Known Facts."""
+    """View or edit what the AI is allowed to state as fact about you."""
     print_banner("PERSONAL KNOWLEDGE BASE & KNOWN FACTS")
     mgr = KnownFactsManager()
-    current_facts = mgr.load_facts()
+    config_path = resolve_project_file("config.yaml")
+    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
 
-    console.print(Panel(current_facts, title="Current Known Authorized Facts", border_style="cyan"))
+    while True:
+        current = mgr.load_facts()
+        console.print(Panel(current.rstrip(), title="What it knows about you",
+                            border_style="cyan"))
 
-    if Confirm.ask("Would you like to edit your Known Facts?", default=False):
-        console.print("[yellow]Type your new Known Facts below. Press Enter twice when finished:[/yellow]")
-        lines = []
-        while True:
-            line = input()
-            if not line and lines and not lines[-1]:
-                break
-            lines.append(line)
-        new_text = "\n".join(lines).strip()
-        if new_text:
-            mgr.save_facts(new_text)
-            console.print("[bold green][OK] Updated Known Facts saved successfully![/bold green]")
+        # Numbered as they are shown. A hidden option that still answers to its
+        # old number is a trap, and a gap in the numbering looks like a fault.
+        options = [
+            ("add", "Add something new [dim](keeps everything else)[/dim]"),
+            ("rewrite", "Rewrite the whole thing"),
+        ]
+        if config.automation.learn_facts_from_email:
+            options.append(("learn", "Learn from my recent email"))
+        options.append(("back", "Back"))
 
-if __name__ == "__main__":
-    app()
+        console.print("\n".join(
+            f"[bold yellow]{n}.[/bold yellow] {label}"
+            for n, (_, label) in enumerate(options, 1)
+        ) + "\n")
+
+        picked = Prompt.ask(
+            "Choice",
+            choices=[str(n) for n in range(1, len(options) + 1)],
+            default=str(len(options)),
+        )
+        action = options[int(picked) - 1][0]
+
+        if action == "back":
+            return
+        if action == "add":
+            _add_to_facts(mgr, config, current)
+        elif action == "rewrite":
+            _rewrite_facts(mgr, current)
+        else:
+            _learn_from_email(mgr, config, current)
+        console.print()
 
 
 def _shell(argv, cwd=None, stdin_text=None, interactive=False):

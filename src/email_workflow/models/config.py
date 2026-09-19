@@ -177,6 +177,11 @@ class AutomationConfig(BaseModel):
     autonomous_rules: List[AutonomousRule] = Field(default_factory=list)
     confidence_threshold_auto_reply: float = 0.90
     confidence_threshold_draft: float = 0.60
+    # Let the AI suggest facts about you from your own incoming mail. Off by
+    # default, and it only ever SUGGESTS: nothing reaches your knowledge base
+    # without you picking it, because a wrong "fact" would then be stated to
+    # real people as if it were true.
+    learn_facts_from_email: bool = False
 
 class NotificationsConfig(BaseModel):
     channel: str = "terminal"

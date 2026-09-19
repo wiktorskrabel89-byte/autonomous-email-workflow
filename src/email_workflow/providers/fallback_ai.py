@@ -15,6 +15,7 @@ from email_workflow.models.analysis import (
     EmailAnalysis,
     ReplyGenerationOutput,
     ReplyReviewOutput,
+    KnownFactsMerge,
 )
 from email_workflow.models.email import EmailMessage
 from email_workflow.models.state import ThreadState
@@ -148,3 +149,9 @@ class FallbackAIProvider(AIProvider):
         known_facts: str = "",
     ) -> ReplyReviewOutput:
         return self._run("review_reply", message, reply, thread, known_facts)
+
+    def organise_facts(self, existing: str, addition: str) -> KnownFactsMerge:
+        return self._run("organise_facts", existing, addition)
+
+    def suggest_facts(self, emails: str, existing: str = "") -> KnownFactsMerge:
+        return self._run("suggest_facts", emails, existing)

@@ -24,6 +24,7 @@ from email_workflow.models.analysis import (
     DecisionSupportOutput,
     ReplyGenerationOutput,
     ReplyReviewOutput,
+    KnownFactsMerge,
 )
 from email_workflow.models.state import ThreadState
 from email_workflow.providers.base_ai import (
@@ -410,6 +411,21 @@ class OpenAICompatibleProvider(AIProvider):
             known_facts=known_facts or "None provided.",
         )
         return self._call_model_with_json_retry(prompt, ReplyGenerationOutput)
+
+    def organise_facts(self, existing: str, addition: str) -> KnownFactsMerge:
+        from email_workflow.core.known_facts import FACTS_MERGE_PROMPT_TEMPLATE
+        prompt = FACTS_MERGE_PROMPT_TEMPLATE.format(
+            existing=existing or "(nothing yet)",
+            addition=addition,
+        )
+        return self._call_model_with_json_retry(prompt, KnownFactsMerge)
+
+    def suggest_facts(self, emails: str, existing: str = "") -> KnownFactsMerge:
+        from email_workflow.core.known_facts import FACTS_FROM_EMAIL_PROMPT_TEMPLATE
+        prompt = FACTS_FROM_EMAIL_PROMPT_TEMPLATE.format(
+            existing=existing or "(nothing yet)", emails=emails,
+        )
+        return self._call_model_with_json_retry(prompt, KnownFactsMerge)
 
     def review_reply(
         self,
