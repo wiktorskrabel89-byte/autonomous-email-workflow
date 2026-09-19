@@ -23,3 +23,6 @@ usage.jsonl
 demo_state.json
 demo_audit.jsonl
 demo_idempotency.json
+
+# which version this copy was updated to
+.update-state.json

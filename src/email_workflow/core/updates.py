@@ -1,0 +1,175 @@
+"""Bring this copy up to date with the project it came from.
+
+The whole difficulty is that a copy of this app is not just code. It is code
+plus the things that make it yours: your keys, your knowledge base, your
+settings, the hour you chose for the daily run, and the record of what has
+already been handled. `git pull` treats all of that as files to be overwritten
+- `config.yaml` is in the repository, so a plain pull would silently reset your
+mailbox settings, put `allow_send` back to false and change your schedule.
+
+So this does not merge. It fetches the new code, copies it in file by file, and
+never touches anything on the protected list. What is yours stays yours, and
+the update is boring.
+"""
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+# Where the code comes from. A different fork can point somewhere else with
+# `update.source` in config.yaml.
+DEFAULT_UPSTREAM = "https://github.com/wiktorskrabel89-byte/autonomous-email-workflow.git"
+
+# Never overwritten by an update. Two kinds of thing: what you configured, and
+# what the app recorded about your mail. Losing either would be worse than
+# missing the update entirely.
+PROTECTED = (
+    ".env",
+    "config.yaml",
+    "known_facts.txt",
+    "auth.json",
+    "state.json",
+    "audit.jsonl",
+    "idempotency.json",
+    "usage.jsonl",
+    "demo_state.json",
+    "demo_audit.jsonl",
+    "demo_idempotency.json",
+)
+
+# Not code either: a stray virtualenv or build output in the source tree is not
+# something to copy over someone's installation.
+SKIP_DIRS = (".git", "__pycache__", ".pytest_cache", ".venv", "venv",
+             "build", "dist", "node_modules")
+
+STATE_FILE = ".update-state.json"
+
+
+def _git(args: List[str], cwd: Optional[Path] = None, timeout: int = 120) -> Tuple[bool, str]:
+    try:
+        done = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                              text=True, timeout=timeout)
+        return done.returncode == 0, (done.stdout or "") + (done.stderr or "")
+    except FileNotFoundError:
+        return False, "git is not installed."
+    except Exception as e:  # a timeout, a broken network
+        return False, str(e)
+
+
+def upstream_head(url: str = DEFAULT_UPSTREAM) -> Optional[str]:
+    """The newest commit upstream, without downloading anything.
+
+    ls-remote is a single cheap request, so checking for updates costs nothing
+    and can be done often.
+    """
+    ok, out = _git(["ls-remote", url, "HEAD"], timeout=45)
+    if not ok or not out.strip():
+        return None
+    first = out.strip().splitlines()[0].split()
+    return first[0] if first and len(first[0]) == 40 else None
+
+
+def read_state(project_root: Path) -> Dict:
+    path = project_root / STATE_FILE
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(project_root: Path, sha: str, source: str) -> None:
+    try:
+        (project_root / STATE_FILE).write_text(
+            json.dumps({"commit": sha, "source": source}, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def update_available(project_root: Path, url: str = DEFAULT_UPSTREAM) -> Tuple[bool, Optional[str], str]:
+    """(there is something new, the upstream commit, a line explaining).
+
+    A copy that has never been updated has nothing recorded, and then anything
+    upstream counts as new - which is the honest answer for a fresh clone.
+    """
+    head = upstream_head(url)
+    if head is None:
+        return False, None, "Could not reach the project to check for updates."
+
+    known = read_state(project_root).get("commit")
+    if known == head:
+        return False, head, "You are on the newest version."
+    if not known:
+        return True, head, "This copy has never been updated from the project."
+    return True, head, "There are new changes."
+
+
+def fetch_upstream(url: str, into: Path, timeout: int = 300) -> Tuple[bool, str]:
+    """A shallow clone of the newest code, somewhere temporary."""
+    ok, out = _git(["clone", "--depth", "1", url, str(into)], timeout=timeout)
+    return ok, out
+
+
+def changed_files(new_tree: Path, project_root: Path) -> List[str]:
+    """Which files an update would actually change, protected ones excluded.
+
+    Shown before anything is written: an update that lists what it will touch
+    is one you can say no to.
+    """
+    changed = []
+    for source in sorted(new_tree.rglob("*")):
+        if not source.is_file():
+            continue
+        relative = source.relative_to(new_tree)
+        if any(part in SKIP_DIRS for part in relative.parts):
+            continue
+        if relative.as_posix() in PROTECTED or relative.name in PROTECTED:
+            continue
+        target = project_root / relative
+        if not target.exists():
+            changed.append(relative.as_posix() + "  (new)")
+            continue
+        try:
+            if source.read_bytes() != target.read_bytes():
+                changed.append(relative.as_posix())
+        except OSError:
+            changed.append(relative.as_posix())
+    return changed
+
+
+def apply_update(new_tree: Path, project_root: Path) -> Tuple[int, List[str]]:
+    """Copy the new code in. Returns (how many files, what went wrong).
+
+    Deliberately copy-in rather than replace-the-folder: a file you added
+    yourself is left alone, and nothing on the protected list is opened at all.
+    """
+    copied, problems = 0, []
+    for source in sorted(new_tree.rglob("*")):
+        if not source.is_file():
+            continue
+        relative = source.relative_to(new_tree)
+        if any(part in SKIP_DIRS for part in relative.parts):
+            continue
+        if relative.as_posix() in PROTECTED or relative.name in PROTECTED:
+            continue
+        target = project_root / relative
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            copied += 1
+        except OSError as e:
+            problems.append(f"{relative.as_posix()}: {e}")
+    return copied, problems
+
+
+def recent_subjects(new_tree: Path, limit: int = 15) -> List[str]:
+    """What changed upstream, in the words of whoever changed it."""
+    ok, out = _git(["log", f"-{limit}", "--pretty=format:%s"], cwd=new_tree)
+    if not ok:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]

@@ -206,6 +206,17 @@ class SecurityConfig(BaseModel):
     # when someone can see your screen.
     show_password_while_typing: bool = True
 
+class UpdateConfig(BaseModel):
+    """Where new versions of the app come from, and whether to look for them.
+
+    Checking is automatic; applying never is. Code that replaces itself behind
+    your back, on a machine that sends email as you, is not a convenience.
+    """
+
+    # Empty means the project this app came from. A fork points elsewhere.
+    source: str = ""
+    check_automatically: bool = True
+
 class AppConfig(BaseModel):
     ai: AIConfig = Field(default_factory=AIConfig)
     email: EmailConfig = Field(default_factory=EmailConfig)
@@ -213,6 +224,7 @@ class AppConfig(BaseModel):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     state: StateConfig = Field(default_factory=StateConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
 
     @classmethod
     def load_from_file(cls, path: Union[str, Path]) -> "AppConfig":

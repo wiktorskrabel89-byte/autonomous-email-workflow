@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import shutil
 import os
 import sys
 import time
@@ -32,6 +33,16 @@ from email_workflow.core.paths import resolve_project_file, find_env_file
 from email_workflow.core.errors import WorkflowError
 from email_workflow.core.auth import AuthManager, MIN_PASSWORD_LENGTH
 from email_workflow.core.usage import UsageTracker
+from email_workflow.core.updates import (
+    DEFAULT_UPSTREAM,
+    PROTECTED,
+    apply_update,
+    changed_files,
+    fetch_upstream,
+    recent_subjects,
+    update_available,
+    write_state,
+)
 from email_workflow.core.scheduling import (
     current_system,
     describe_drift,
@@ -992,6 +1003,7 @@ def run(
         else:
             _process_inbox(pipeline, email_provider, config)
             console.print("\n[bold green][OK] Processing complete.[/bold green]")
+            _notice_if_out_of_date(config, resolve_project_file("config.yaml").parent)
 
     except WorkflowError as e:
         _print_workflow_error(e)
@@ -2272,3 +2284,161 @@ def schedule(
         # the answer is usually "run it now" or "show me the runs", and
         # neither needs one.
         _schedule_on_github(project_root, preset=parse_time(at) if at else None)
+
+
+def _update_source(config) -> str:
+    return (getattr(getattr(config, "update", None), "source", "") or DEFAULT_UPSTREAM)
+
+
+def _notice_if_out_of_date(config, project_root):
+    """One quiet line after a run. Never applies anything, never fails a run.
+
+    Checking automatically is fine; updating automatically is not. Code that
+    replaces itself behind your back, on a machine that sends email as you, is
+    not a convenience.
+    """
+    try:
+        if not getattr(getattr(config, "update", None), "check_automatically", True):
+            return
+        newer, _, _ = update_available(project_root, _update_source(config))
+        if newer:
+            console.print(
+                "\n[dim]There is a newer version of this app. "
+                "Run [bold]email-workflow update[/bold] to get it - your "
+                "settings and your data are left alone.[/dim]"
+            )
+    except Exception:
+        pass
+
+
+@app.command()
+def update(
+    check: bool = typer.Option(False, "--check", help="Only look; change nothing"),
+):
+    """Get the newest version, keeping your settings, keys and history."""
+    print_banner("UPDATE")
+
+    project_root = resolve_project_file("config.yaml").parent
+    config_path = resolve_project_file("config.yaml")
+    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    source = _update_source(config)
+
+    with console.status("[cyan]checking...", spinner="dots"):
+        newer, head, why = update_available(project_root, source)
+
+    if not newer:
+        console.print(f"[bold green]{why}[/bold green]")
+        console.print(f"[dim]{source}[/dim]")
+        return
+    if check:
+        console.print(f"[bold yellow]{why}[/bold yellow]")
+        console.print("[dim]Run [bold]email-workflow update[/bold] to get it.[/dim]")
+        return
+
+    import tempfile
+
+    workspace = Path(tempfile.mkdtemp(prefix="email-workflow-update-"))
+    new_tree = workspace / "new"
+    try:
+        with console.status("[cyan]downloading the new version...", spinner="dots"):
+            ok, out = fetch_upstream(source, new_tree)
+        if not ok:
+            console.print(Panel(
+                f"[bold red]Could not download the update.[/bold red]\n\n"
+                f"{out.strip()[:400]}\n\n"
+                f"[dim]Nothing on this computer was changed.[/dim]",
+                border_style="red",
+            ))
+            return
+
+        changes = changed_files(new_tree, project_root)
+        if not changes:
+            console.print("[bold green]The code here is already identical to "
+                          "the newest version.[/bold green]")
+            write_state(project_root, head, source)
+            return
+
+        subjects = recent_subjects(new_tree)
+        if subjects:
+            console.print(Panel(
+                "\n".join(f"  - {line}" for line in subjects[:10]),
+                title="What changed in the project",
+                border_style="cyan",
+            ))
+
+        shown = changes[:20]
+        more = len(changes) - len(shown)
+        console.print(Panel(
+            f"[bold]{len(changes)} file(s) would be replaced:[/bold]\n\n  "
+            + "\n  ".join(shown)
+            + (f"\n  [dim]...and {more} more[/dim]" if more else "")
+            + "\n\n[bold green]These are NOT touched, whatever the update "
+              "contains:[/bold green]\n  " + "\n  ".join(PROTECTED)
+            + "\n\n[dim]Your settings, your keys, your knowledge base, your "
+              "login and the record of what has already been handled all stay "
+              "exactly as they are.[/dim]",
+            title="Before anything is replaced",
+            border_style="yellow",
+        ))
+
+        if not Confirm.ask("Update now?", default=True):
+            console.print("[dim]Nothing changed.[/dim]")
+            return
+
+        copied, problems = apply_update(new_tree, project_root)
+        for line in problems:
+            console.print(f"[yellow]could not replace {line}[/yellow]")
+        write_state(project_root, head, source)
+        console.print(f"[dim]replaced {copied} file(s)[/dim]")
+
+        # Dependencies can change with the code, and an app that imports
+        # nothing is worse than an out-of-date one.
+        with console.status("[cyan]reinstalling...", spinner="dots"):
+            ok, out = _shell([sys.executable, "-m", "pip", "install", "-e", ".",
+                              "--quiet"], cwd=project_root)
+        if not ok:
+            console.print(Panel(
+                f"[bold yellow]The new code is in place but reinstalling "
+                f"failed.[/bold yellow]\n\n{out.strip()[:300]}\n\n"
+                f"Run this yourself:\n\n    pip install -e .",
+                border_style="yellow",
+            ))
+
+        # Does it actually start? Better to find out here than at 7am.
+        ok, out = _shell([sys.executable, "-c",
+                          "import email_workflow.cli.cli as c; print('ok')"],
+                         cwd=project_root)
+        if not ok or "ok" not in out:
+            console.print(Panel(
+                f"[bold red]The updated app does not start.[/bold red]\n\n"
+                f"{out.strip()[:400]}\n\n"
+                f"[dim]Your settings and data are untouched. Report this, or "
+                f"reinstall with: pip install -e .[/dim]",
+                border_style="red",
+            ))
+            return
+
+        console.print(Panel(
+            "[bold green]Updated, and it starts.[/bold green]\n\n"
+            "[dim]Your settings, keys and history were not touched.[/dim]",
+            border_style="green",
+        ))
+
+        # A scheduled run uses the copy on GitHub, not this one.
+        if (project_root / ".git").exists():
+            remote_ok, _ = _shell(["git", "remote", "get-url", "origin"],
+                                  cwd=project_root)
+            if remote_ok and Confirm.ask(
+                "\nYour daily run uses the copy on GitHub. Push the update "
+                "there too?", default=True,
+            ):
+                _shell(["git", "add", "-A"], cwd=project_root)
+                _shell(["git", "commit", "-m", "Update the app"], cwd=project_root)
+                ok, out = _shell(["git", "push", "origin", "HEAD"], cwd=project_root)
+                console.print(
+                    "[bold green]Pushed - the scheduled run uses the new "
+                    "version from now on.[/bold green]" if ok else
+                    f"[yellow]Could not push: {out.strip()[:200]}[/yellow]"
+                )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
