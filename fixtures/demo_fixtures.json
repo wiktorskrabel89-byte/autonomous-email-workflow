@@ -1,0 +1,74 @@
+[
+  {
+    "message_id": "msg_001_newsletter",
+    "thread_id": "thread_news_01",
+    "in_reply_to": null,
+    "sender": {
+      "name": "Tech Weekly Digest",
+      "email": "newsletter@techweekly.com",
+      "known_contact": false
+    },
+    "subject": "Tech Weekly Digest #142 - AI & Future of Software",
+    "body": "Welcome to this week's issue of Tech Weekly! Here are the top stories in software development and AI engineering...",
+    "received_at": "2026-09-18T09:00:00Z",
+    "headers": {
+      "List-Unsubscribe": "<mailto:unsubscribe@techweekly.com>"
+    }
+  },
+  {
+    "message_id": "msg_002a_meeting_tue",
+    "thread_id": "thread_meet_02",
+    "in_reply_to": null,
+    "sender": {
+      "name": "Alex Smith",
+      "email": "alex.smith@partnercompany.com",
+      "known_contact": true
+    },
+    "subject": "Quarterly Strategy Sync - Meeting Proposal",
+    "body": "Hi there,\n\nCan we meet Tuesday at 2:00 PM to review the quarterly strategy deck?\n\nBest,\nAlex",
+    "received_at": "2026-09-18T10:00:00Z",
+    "headers": {}
+  },
+  {
+    "message_id": "msg_002b_meeting_wed",
+    "thread_id": "thread_meet_02",
+    "in_reply_to": "msg_002a_meeting_tue",
+    "sender": {
+      "name": "Alex Smith",
+      "email": "alex.smith@partnercompany.com",
+      "known_contact": true
+    },
+    "subject": "Re: Quarterly Strategy Sync - Meeting Proposal",
+    "body": "Hi there,\n\nActually, Wednesday works better for me. Let's do Wednesday at 2:00 PM instead if that works for you.\n\nThanks,\nAlex",
+    "received_at": "2026-09-18T10:30:00Z",
+    "headers": {}
+  },
+  {
+    "message_id": "msg_003_invoice_dispute",
+    "thread_id": "thread_fin_03",
+    "in_reply_to": null,
+    "sender": {
+      "name": "Billing Dept - CloudVendor",
+      "email": "billing@cloudvendor.io",
+      "known_contact": true
+    },
+    "subject": "URGENT: Disputed Line Item on Invoice #1042",
+    "body": "Hello,\n\nWe noticed a billing discrepancy on invoice #1042. We agree there was an overcharge on tier-3 storage, but we need you to confirm the corrected line item credit amount before we issue a refund.\n\nPlease reply ASAP.",
+    "received_at": "2026-09-18T11:15:00Z",
+    "headers": {}
+  },
+  {
+    "message_id": "msg_004_phishing_alert",
+    "thread_id": "thread_sec_04",
+    "in_reply_to": null,
+    "sender": {
+      "name": "First National Bank Security",
+      "email": "security-alert@fake-bank-auth-update.com",
+      "known_contact": false
+    },
+    "subject": "SECURITY ACTION REQUIRED: Confirm your banking password immediately",
+    "body": "Dear Valued Customer,\n\nYour online banking access has been temporarily restricted due to suspicious login attempts. Please click the link below to confirm your password and restore full access to your account immediately.\n\nFailure to confirm within 24 hours will result in permanent account suspension.",
+    "received_at": "2026-09-18T12:00:00Z",
+    "headers": {}
+  }
+]

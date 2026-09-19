@@ -1,0 +1,108 @@
+# Runs the email workflow on GitHub's machines, so nothing needs to be awake at
+# home. Your PC can be shut down; the report still arrives.
+#
+# Set up once:
+#   1. Push this folder to a PRIVATE GitHub repository.
+#      (config.yaml holds your email address, so do not make it public.)
+#   2. Repo -> Settings -> Secrets and variables -> Actions -> New repository secret.
+#      Add: GEMINI_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, DISCORD_WEBHOOK_URL
+#      Optional extra keys for failover: GROQ_API_KEY, OPENAI_API_KEY
+#      Optional keys from your OTHER accounts, which are used at the same time:
+#      GEMINI_API_KEY_2, GEMINI_API_KEY_3, GROQ_API_KEY_2, OPENAI_API_KEY_2
+#
+#   4. GitHub switches scheduled workflows off in a repo with no activity for
+#      60 days. If it goes quiet, push anything or press "Run workflow".
+#   3. Actions tab -> enable workflows.
+#
+# To try it immediately, use "Run workflow" on the Actions tab instead of
+# waiting for the schedule.
+
+name: Email workflow
+
+on:
+  schedule:
+    # 06:00 UTC daily. GitHub cron is always UTC, so adjust for your timezone:
+    # Poland is UTC+1 in winter and UTC+2 in summer, so this is 07:00 or 08:00.
+    # A scheduled run can start a few minutes late when GitHub is busy.
+    - cron: "0 8 * * *"
+  workflow_dispatch:        # lets you run it by hand from the Actions tab
+
+# Two copies running at once would process the same emails twice.
+concurrency:
+  group: email-workflow
+  cancel-in-progress: false
+
+jobs:
+  process-inbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e .
+
+      # Without this, every run would see the same unread emails as new and
+      # draft a second reply to each of them.
+      - name: Restore what previous runs already handled
+        uses: actions/cache@v4
+        with:
+          path: |
+            state.json
+            idempotency.json
+            usage.jsonl
+          key: email-workflow-state-${{ github.run_id }}
+          restore-keys: |
+            email-workflow-state-
+
+      - name: Process the inbox
+        env:
+          # Nobody is at the keyboard to type a password.
+          EMAIL_WORKFLOW_DISABLE_LOGIN: "1"
+          EMAIL_WORKFLOW_ROOT: ${{ github.workspace }}
+
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+          # Keys from your other accounts. A free tier is per account, so each
+          # of these is a separate allowance and the run uses them at the same
+          # time. A secret you have not set arrives empty and is simply ignored,
+          # so there is no harm in listing them all.
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+          OPENAI_API_KEY_2: ${{ secrets.OPENAI_API_KEY_2 }}
+
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+          # Your knowledge base. known_facts.txt is gitignored because it is
+          # personal, so on GitHub the facts come from here instead.
+          KNOWN_FACTS: ${{ secrets.KNOWN_FACTS }}
+        run: email-workflow run
+
+      - name: Show what the keys were used for
+        if: always()
+        env:
+          EMAIL_WORKFLOW_DISABLE_LOGIN: "1"
+          EMAIL_WORKFLOW_ROOT: ${{ github.workspace }}
+        run: email-workflow usage
+
+      # The audit log is the record of what was decided and why. Kept for 30
+      # days so a surprising decision can be traced after the fact.
+      - name: Keep the audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-log
+          path: audit.jsonl
+          retention-days: 30
+          if-no-files-found: ignore

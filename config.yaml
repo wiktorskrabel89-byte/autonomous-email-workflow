@@ -1,0 +1,74 @@
+ai:
+  mode: api
+  api:
+    provider: gemini
+    model: gemini-3.1-flash-lite
+    api_key_env: GEMINI_API_KEY
+    temperature: 0.1
+    max_output_tokens: 4000
+    requests_per_minute: 15
+  keys:
+    # Use every key you have for a provider, not just the first.
+    auto_detect: true
+    # Several emails at once, one key each. No effect with a single key.
+    parallel: true
+    # 0 = one worker per key.
+    max_workers: 0
+    # A second key checks a reply before it can be sent: one writes, another
+    # marks it. Ignored when there is only one key.
+    review: true
+  local:
+    runtime: ollama
+    model: llama3.2
+    endpoint: http://localhost:11434
+    temperature: 0.1
+  fallback:
+    enabled: true
+    auto_detect: true
+    use_local_last: true
+    chain:
+    - provider: gemini
+      model: gemini-3-flash-preview
+      api_key_env: null
+    auto_order:
+    - gemini
+    - groq
+    - openai
+    - openrouter
+  usage:
+    store: usage.jsonl
+    warn_at_percent: 80
+    limits: {}
+email:
+  provider: gmail
+  account_ref: your.address@example.com
+  mailbox: INBOX
+  sync_mode: poll
+  poll_interval_seconds: 60
+  max_age_days: 7
+  max_emails_per_run: 0
+  allow_send: true
+  archive_unimportant: true
+  create_drafts: true
+  star_important: true
+  important_label: AI/Important
+automation:
+  level: autonomous
+  trusted_categories:
+  - newsletter
+  - receipt
+  - notification
+  - work
+  autonomous_rules: []
+  confidence_threshold_auto_reply: 0.9
+  confidence_threshold_draft: 0.6
+notifications:
+  channel: discord
+  digest_mode: immediate
+state:
+  store: state.json
+security:
+  require_login: true
+  max_login_attempts: 3
+  store: auth.json
+  show_password_while_typing: true
