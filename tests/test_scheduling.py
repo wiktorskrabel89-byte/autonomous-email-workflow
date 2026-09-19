@@ -227,3 +227,41 @@ def test_secrets_sitting_untracked_are_reported(tmp_path):
     (tmp_path / "auth.json").write_text("{}", encoding="utf-8")
     exposed = git_is_clean_of_secrets(tmp_path)
     assert ".env" in exposed and "auth.json" in exposed
+
+
+# --- an existing schedule, read back ----------------------------------------
+
+from email_workflow.core.scheduling import cron_in_workflow, local_time_for_utc_cron
+
+
+def test_the_cron_already_in_the_workflow_is_found():
+    text = 'on:\n  schedule:\n    # comment\n    - cron: "30 5 * * *"\n  workflow_dispatch:\n'
+    assert cron_in_workflow(text) == "30 5 * * *"
+
+
+def test_no_cron_means_none():
+    assert cron_in_workflow("on:\n  workflow_dispatch:\n") is None
+    assert cron_in_workflow("") is None
+
+
+def test_a_cron_reads_back_as_the_local_time_it_fires_at():
+    """Telling someone their job runs at "30 5 * * *" tells them nothing."""
+    assert local_time_for_utc_cron("30 5 * * *", now=at_offset(2)) == (7, 30)
+    assert local_time_for_utc_cron("30 6 * * *", now=at_offset(1)) == (7, 30)
+    assert local_time_for_utc_cron("30 7 * * *", now=at_offset(0)) == (7, 30)
+
+
+def test_reading_back_survives_the_day_wrapping():
+    assert local_time_for_utc_cron("30 22 * * *", now=at_offset(2)) == (0, 30)
+
+
+def test_a_round_trip_returns_the_same_time():
+    for h, m in ((0, 0), (7, 30), (13, 5), (23, 59)):
+        for offset in (-5, 0, 1, 2):
+            cron = utc_cron_for_local_time(h, m, now=at_offset(offset))
+            assert local_time_for_utc_cron(cron, now=at_offset(offset)) == (h, m)
+
+
+@pytest.mark.parametrize("junk", ["", "nonsense", "* * * * *", "99 5 * * *", "30"])
+def test_a_cron_we_cannot_read_is_not_guessed_at(junk):
+    assert local_time_for_utc_cron(junk, now=at_offset(2)) is None

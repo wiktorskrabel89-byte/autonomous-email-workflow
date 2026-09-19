@@ -304,3 +304,35 @@ def git_is_clean_of_secrets(project_root: Path) -> List[str]:
         except (OSError, subprocess.SubprocessError):
             exposed.append(name)
     return exposed
+
+
+def cron_in_workflow(workflow_text: str) -> Optional[str]:
+    """The cron line already in the workflow file, if there is one."""
+    found = re.search(r'\n\s*-\s*cron:\s*"([^"]*)"', workflow_text)
+    return found.group(1).strip() if found else None
+
+
+def local_time_for_utc_cron(
+    cron: str, now: Optional[datetime] = None
+) -> Optional[Tuple[int, int]]:
+    """Turn a UTC cron line back into the local time it fires at.
+
+    The inverse of utc_cron_for_local_time, so an existing schedule can be
+    shown to the user in the clock they actually read - telling someone their
+    job runs at "0 5 * * *" is not telling them anything.
+    """
+    parts = (cron or "").split()
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        return None
+    minute, hour = int(parts[0]), int(parts[1])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+
+    reference = now or datetime.now().astimezone()
+    if reference.tzinfo is None:
+        reference = reference.astimezone()
+    as_utc = reference.astimezone(timezone.utc).replace(
+        hour=hour, minute=minute, second=0, microsecond=0
+    )
+    local = as_utc.astimezone(reference.tzinfo)
+    return local.hour, local.minute

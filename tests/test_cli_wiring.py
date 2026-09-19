@@ -310,3 +310,110 @@ def test_the_menu_no_longer_offers_the_blocking_wait(project):
     assert "Schedule Daily Run at Specific Time" not in result.output, (
         "the old label promised a schedule it did not deliver"
     )
+
+
+def _github_ready(monkeypatch, project, existing=""):
+    """Everything the GitHub path checks, stubbed, so only the branch is tested."""
+    calls = no_shell(monkeypatch)
+    monkeypatch.setattr(cli_module, "tool_available", lambda name: True)
+    monkeypatch.setattr(cli_module, "git_is_clean_of_secrets", lambda root: [])
+    monkeypatch.setattr(cli_module, "_github_account", lambda root: "someone")
+    monkeypatch.setattr(cli_module, "_existing_github_repo", lambda root: existing)
+    monkeypatch.setattr(cli_module, "secrets_from_env_file", lambda p: {"GEMINI_API_KEY": "x"})
+    (project / ".git").mkdir(exist_ok=True)
+    wf = project / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "email-workflow.yml").write_text(
+        'on:\n  schedule:\n    - cron: "0 6 * * *"\n', encoding="utf-8"
+    )
+    return calls
+
+
+def test_a_second_run_does_not_try_to_make_another_repository(project, monkeypatch):
+    """It used to answer "repository already exists" and carry on regardless.
+    Coming back should open what you can do, not rebuild anything."""
+    write_config(project, require_login=False)
+    calls = _github_ready(monkeypatch, project, existing="someone/email-workflow-lab")
+
+    result = runner.invoke(
+        cli_module.app, ["schedule", "--where", "github"], input="y\n6\n"
+    )
+
+    assert "Already on GitHub" in result.output
+    assert "someone/email-workflow-lab" in result.output
+    created = [c for c in calls if c[:3] == ["gh", "repo", "create"]]
+    assert not created, "it tried to create a repository that already exists"
+
+
+def test_the_menu_offers_the_things_you_come_back_for(project, monkeypatch):
+    write_config(project, require_login=False)
+    _github_ready(monkeypatch, project, existing="someone/repo")
+
+    result = runner.invoke(
+        cli_module.app, ["schedule", "--where", "github"], input="y\n6\n"
+    )
+
+    for offered in ("Change the time", "Run it now", "See the last runs",
+                    "Upload your keys again", "different repository"):
+        assert offered in result.output, f"the menu does not offer: {offered}"
+
+
+def test_changing_the_time_only_pushes(project, monkeypatch):
+    write_config(project, require_login=False)
+    calls = _github_ready(monkeypatch, project, existing="someone/repo")
+
+    # confirm the account, "1. Change the time" (--at supplies it), then Back
+    runner.invoke(
+        cli_module.app, ["schedule", "--where", "github", "--at", "09:15"],
+        input="y\n1\n6\n",
+    )
+
+    assert any(c[:2] == ["git", "push"] for c in calls), "the new time never reached GitHub"
+    created = [c for c in calls if c[:3] == ["gh", "repo", "create"]]
+    assert not created, "changing the hour must not create anything"
+    wf = (project / ".github" / "workflows" / "email-workflow.yml").read_text(encoding="utf-8")
+    assert '"0 6 * * *"' not in wf, "the workflow still holds the old time"
+
+
+def test_backing_out_changes_nothing(project, monkeypatch):
+    write_config(project, require_login=False)
+    calls = _github_ready(monkeypatch, project, existing="someone/repo")
+
+    runner.invoke(cli_module.app, ["schedule", "--where", "github"], input="y\n6\n")
+
+    assert not any(c[:2] == ["git", "push"] for c in calls)
+    wf = (project / ".github" / "workflows" / "email-workflow.yml").read_text(encoding="utf-8")
+    assert '"0 6 * * *"' in wf, "the time was changed after backing out"
+
+
+def test_you_can_start_a_run_from_the_menu(project, monkeypatch):
+    """The point of "run it now": otherwise you wait until tomorrow to find out
+    whether any of this works."""
+    write_config(project, require_login=False)
+    calls = _github_ready(monkeypatch, project, existing="someone/repo")
+
+    runner.invoke(cli_module.app, ["schedule", "--where", "github"], input="y\n2\n6\n")
+
+    started = [c for c in calls if c[:3] == ["gh", "workflow", "run"]]
+    assert started, "it never asked GitHub to run anything"
+
+
+def test_the_runs_can_be_listed(project, monkeypatch):
+    write_config(project, require_login=False)
+    calls = _github_ready(monkeypatch, project, existing="someone/repo")
+
+    runner.invoke(cli_module.app, ["schedule", "--where", "github"], input="y\n3\n6\n")
+
+    listed = [c for c in calls if c[:3] == ["gh", "run", "list"]]
+    assert listed, "it never asked GitHub for the runs"
+
+
+def test_keys_are_not_uploaded_without_a_yes(project, monkeypatch):
+    write_config(project, require_login=False)
+    calls = _github_ready(monkeypatch, project, existing="someone/repo")
+
+    # "4. Upload your keys again", then refuse, then Back
+    runner.invoke(cli_module.app, ["schedule", "--where", "github"], input="y\n4\nn\n6\n")
+
+    sent = [c for c in calls if c[:3] == ["gh", "secret", "set"]]
+    assert not sent, "keys went to GitHub without a yes"

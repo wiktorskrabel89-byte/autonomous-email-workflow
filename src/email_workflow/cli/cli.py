@@ -46,6 +46,8 @@ from email_workflow.core.scheduling import (
     tool_available,
     utc_cron_for_local_time,
     workflow_with_cron,
+    cron_in_workflow,
+    local_time_for_utc_cron,
 )
 from email_workflow.cli.formatter import (
     print_banner,
@@ -1613,7 +1615,228 @@ def _schedule_on_this_computer(hour, minute, project_root):
         ))
 
 
-def _schedule_on_github(hour, minute, project_root):
+def _github_account(project_root):
+    ok, who = _shell(["gh", "api", "user", "-q", ".login"], cwd=project_root)
+    return who.strip().splitlines()[0].strip() if ok and who.strip() else ""
+
+
+def _existing_github_repo(project_root):
+    """The repo this folder already pushes to, or "" if there is none.
+
+    Without this, a second run tries to create a repository that exists, and
+    the only sign is a line saying so while everything else is done twice.
+    Someone coming back to change the hour should not be made to think about
+    repositories at all.
+    """
+    ok, url = _shell(["git", "remote", "get-url", "origin"], cwd=project_root)
+    if not ok or "github.com" not in url:
+        return ""
+    ok, name = _shell(["gh", "repo", "view", "--json", "nameWithOwner",
+                       "-q", ".nameWithOwner"], cwd=project_root)
+    return name.strip().splitlines()[0].strip() if ok and name.strip() else ""
+
+
+def _write_cron_and_push(project_root, cron, hour, minute, full_name):
+    """Put the time in the workflow and push it. Returns True if it landed."""
+    wf_path = project_root / ".github" / "workflows" / "email-workflow.yml"
+    if not wf_path.exists():
+        console.print("[bold red]The workflow file is missing, so there is "
+                      "nothing to schedule.[/bold red]")
+        return False
+
+    wf_path.write_text(
+        workflow_with_cron(wf_path.read_text(encoding="utf-8"), cron),
+        encoding="utf-8",
+    )
+    _shell(["git", "add", "-A"], cwd=project_root)
+    ok, out = _shell(
+        ["git", "commit", "-m", f"Run the email workflow daily at {hour:02d}:{minute:02d}"],
+        cwd=project_root,
+    )
+    if not ok and "nothing to commit" not in out.lower():
+        console.print(f"[yellow]git commit said:[/yellow] {out.strip()[:200]}")
+
+    ok, out = _shell(["git", "push", "origin", "HEAD"], cwd=project_root)
+    if not ok:
+        console.print(Panel(
+            f"[bold red]The new time is saved here but could not be pushed, so "
+            f"GitHub is still running the old one.[/bold red]\n\n{out.strip()[:400]}",
+            border_style="red",
+        ))
+        return False
+    return True
+
+
+def _upload_secrets(project_root, secrets, full_name):
+    """Each value on stdin, so it never appears in a command line other
+    processes on this machine can read. No --repo: inside the repository gh
+    reads it from the remote, and a bare folder name is not the OWNER/REPO it
+    expects - which is what silently lost every secret the first time."""
+    sent, failed = 0, []
+    for name, value in sorted(secrets.items()):
+        ok, out = _shell(["gh", "secret", "set", name],
+                         cwd=project_root, stdin_text=value)
+        if ok:
+            sent += 1
+        else:
+            failed.append(name)
+            console.print(f"[yellow]could not set {name}: {out.strip()[:120]}[/yellow]")
+
+    if failed:
+        listed = "\n  ".join(failed)
+        console.print(Panel(
+            f"[bold red]{len(failed)} of {len(secrets)} keys did not upload, so "
+            f"this is NOT working yet.[/bold red]\n\n  {listed}\n\n"
+            f"A run without its keys fails on the first email.\n\n"
+            f"Add them here:\n"
+            f"  https://github.com/{full_name}/settings/secrets/actions",
+            title="Not finished",
+            border_style="red",
+        ))
+        return False
+    console.print(f"[dim]uploaded all {sent} keys[/dim]")
+    return True
+
+
+def _ask_time(default="07:30"):
+    """Ask until it is a time, or give up if the user is clearly done."""
+    while True:
+        try:
+            return parse_time(Prompt.ask("What time each day?", default=default))
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+
+
+def _current_schedule(wf_path):
+    """(hour, minute) the workflow currently fires at, in local time."""
+    if not wf_path.exists():
+        return None
+    cron = cron_in_workflow(wf_path.read_text(encoding="utf-8"))
+    return local_time_for_utc_cron(cron) if cron else None
+
+
+def _github_menu(project_root, full_name, wf_path, preset=None):
+    """Everything you can do once it is already on GitHub.
+
+    Returning "create" means the user asked for a different repository, and the
+    caller falls through to the first-time path.
+    """
+    while True:
+        at = _current_schedule(wf_path)
+        running = f"{at[0]:02d}:{at[1]:02d}" if at else "an unknown time"
+
+        console.print(Panel(
+            f"  repository: [bold]{full_name}[/bold]\n"
+            f"  runs daily at: [bold]{running}[/bold] your time\n\n"
+            f"[bold yellow]1.[/bold yellow] Change the time\n"
+            f"[bold yellow]2.[/bold yellow] Run it now\n"
+            f"[bold yellow]3.[/bold yellow] See the last runs on GitHub\n"
+            f"[bold yellow]4.[/bold yellow] Upload your keys again\n"
+            f"[bold yellow]5.[/bold yellow] Use a different repository\n"
+            f"[bold yellow]6.[/bold yellow] Back",
+            title="Already on GitHub",
+            border_style="cyan",
+        ))
+        choice = Prompt.ask("Choice", choices=["1", "2", "3", "4", "5", "6"], default="6")
+
+        if choice == "6":
+            return ""
+
+        if choice == "1":
+            hour, minute = preset or _ask_time(running if at else "07:30")
+            preset = None
+            if at == (hour, minute):
+                console.print("[dim]That is already the time it runs at.[/dim]\n")
+                continue
+            cron = utc_cron_for_local_time(hour, minute)
+            drift = describe_drift(hour, minute)
+            if drift:
+                console.print(f"[yellow]{drift}[/yellow]")
+            if _write_cron_and_push(project_root, cron, hour, minute, full_name):
+                console.print(Panel(
+                    f"[bold green]Done.[/bold green] It now runs daily at "
+                    f"[bold]{hour:02d}:{minute:02d}[/bold] your time.",
+                    border_style="green",
+                ))
+
+        elif choice == "2":
+            console.print("[dim]asking GitHub to run it now...[/dim]")
+            ok, out = _shell(["gh", "workflow", "run", "Email workflow"],
+                             cwd=project_root)
+            if ok:
+                console.print(Panel(
+                    "[bold green]Started.[/bold green] It takes about a minute.\n\n"
+                    "Choose [bold]3[/bold] in a moment to see how it went.",
+                    border_style="green",
+                ))
+            else:
+                console.print(Panel(
+                    f"[bold red]GitHub would not start it.[/bold red]\n\n"
+                    f"{out.strip()[:400]}\n\n"
+                    f"[dim]A workflow that has never run once may need enabling "
+                    f"in the Actions tab first.[/dim]",
+                    border_style="red",
+                ))
+
+        elif choice == "3":
+            ok, out = _shell(
+                ["gh", "run", "list", "--limit", "10",
+                 "--json", "status,conclusion,createdAt,displayTitle,databaseId",
+                 "--template",
+                 "{{range .}}{{.createdAt}}  {{.status}}  {{.conclusion}}  {{.databaseId}}\n{{end}}"],
+                cwd=project_root,
+            )
+            if not ok or not out.strip():
+                console.print("[dim]No runs yet - choose 2 to start one.[/dim]\n")
+                continue
+            table = Table(title="Runs on GitHub", border_style="cyan")
+            table.add_column("When (UTC)")
+            table.add_column("State")
+            table.add_column("Result")
+            table.add_column("Run id", style="dim")
+            for line in out.strip().splitlines():
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                when, status, result, run_id = parts[0], parts[1], parts[2], parts[3]
+                colour = {"success": "green", "failure": "red"}.get(result, "yellow")
+                table.add_row(when[:16].replace("T", " "), status,
+                              f"[{colour}]{result}[/{colour}]", run_id)
+            console.print(table)
+            console.print(
+                f"[dim]Details of one run:  gh run view <run id> --repo {full_name}[/dim]\n"
+            )
+
+        elif choice == "4":
+            secrets = secrets_from_env_file(find_env_file())
+            if not secrets:
+                console.print("[bold red]There are no keys in your .env to "
+                              "upload.[/bold red]\n")
+                continue
+            console.print(
+                f"[yellow]About to upload {len(secrets)} key(s) to {full_name}: "
+                f"{', '.join(sorted(secrets))}[/yellow]"
+            )
+            if Confirm.ask("Upload them?", default=False):
+                _upload_secrets(project_root, secrets, full_name)
+
+        elif choice == "5":
+            console.print(Panel(
+                f"This folder currently pushes to [bold]{full_name}[/bold].\n\n"
+                f"Using a different repository points it somewhere else. The "
+                f"old repository is not deleted and its schedule keeps running "
+                f"until you turn it off in its Actions tab - otherwise you get "
+                f"the same reports twice.",
+                title="A different repository",
+                border_style="yellow",
+            ))
+            if not Confirm.ask("Point this folder at a new repository?", default=False):
+                continue
+            _shell(["git", "remote", "remove", "origin"], cwd=project_root)
+            return "create"
+
+
+def _schedule_on_github(project_root, preset=None):
     """Put it on GitHub Actions: free, and it runs with your computer off."""
     for tool in ("git", "gh"):
         if not tool_available(tool):
@@ -1652,11 +1875,7 @@ def _schedule_on_github(hour, minute, project_root):
             console.print("[bold red]Sign-in did not complete. Nothing was changed.[/bold red]")
             return
 
-    def github_account():
-        ok, who = _shell(["gh", "api", "user", "-q", ".login"], cwd=project_root)
-        return who.strip().splitlines()[0].strip() if ok and who.strip() else ""
-
-    account = github_account()
+    account = _github_account(project_root)
     if account:
         console.print(
             f"\nGitHub is signed in as [bold]{account}[/bold]. "
@@ -1668,10 +1887,21 @@ def _schedule_on_github(hour, minute, project_root):
             if not ok:
                 console.print("[bold red]Sign-in did not complete. Nothing was changed.[/bold red]")
                 return
-            account = github_account()
+            account = _github_account(project_root)
             console.print(f"[dim]now signed in as {account or 'unknown'}[/dim]")
 
-    # 2. A repo is a copy of this folder on someone else's computer.
+    wf_path = project_root / ".github" / "workflows" / "email-workflow.yml"
+
+    # 2. Already set up? Then this is almost always "change the hour", and
+    #    nobody should have to think about repositories to do that.
+    existing = _existing_github_repo(project_root) if (project_root / ".git").exists() else ""
+    if existing:
+        if _github_menu(project_root, existing, wf_path, preset=preset) != "create":
+            return
+        existing = ""
+
+    # 3. A first time: a repo is a copy of this folder on someone else's
+    #    computer, so everything below is checked before anything is created.
     if not (project_root / ".git").exists():
         ok, out = _shell(["git", "init"], cwd=project_root)
         if not ok:
@@ -1692,8 +1922,6 @@ def _schedule_on_github(hour, minute, project_root):
         ))
         raise typer.Exit(code=1)
 
-    # 3. What goes where
-    secrets = secrets_from_env_file(find_env_file())
     secrets = secrets_from_env_file(find_env_file())
     if not secrets:
         console.print(Panel(
@@ -1708,22 +1936,25 @@ def _schedule_on_github(hour, minute, project_root):
         if not Confirm.ask("Set the schedule up anyway, without keys?", default=False):
             return
 
-    repo = Prompt.ask("Repository name", default=repo_name_suggestion(project_root))
+    # Only now is a time actually needed.
+    hour, minute = preset or _ask_time()
     cron = utc_cron_for_local_time(hour, minute)
     drift = describe_drift(hour, minute)
+
+    repo = Prompt.ask("Repository name", default=repo_name_suggestion(project_root))
 
     console.print(Panel(
         f"[bold]This will:[/bold]\n"
         f"  1. create a [bold]private[/bold] GitHub repository '{repo}'\n"
         f"  2. push this folder to it\n"
-        f"  3. upload {len(secrets)} secret(s) to that repository:\n"
+        f"  3. upload {len(secrets)} key(s) to that repository:\n"
         f"     [dim]{', '.join(sorted(secrets))}[/dim]\n"
-        f"  4. run the workflow daily at [bold]{hour:02d}:{minute:02d}[/bold] "
-        f"your time (cron [bold]{cron}[/bold] UTC)\n\n"
+        f"  4. run it daily at [bold]{hour:02d}:{minute:02d}[/bold] your time "
+        f"(cron [bold]{cron}[/bold] UTC)\n\n"
         + (f"[yellow]{drift}[/yellow]\n\n" if drift else "")
         + "[bold yellow]Your API keys and your Gmail app password will be "
-          "stored on GitHub.[/bold yellow] GitHub encrypts them and they are "
-          "hidden in logs, but they do leave this computer.",
+          "stored on GitHub.[/bold yellow] GitHub encrypts them and hides them "
+          "in logs, but they do leave this computer.",
         title="Before anything is uploaded",
         border_style="yellow",
     ))
@@ -1731,8 +1962,6 @@ def _schedule_on_github(hour, minute, project_root):
         console.print("[dim]Stopped. Nothing left this computer.[/dim]")
         return
 
-    # 4. Write the workflow with the chosen time, then commit everything.
-    wf_path = project_root / ".github" / "workflows" / "email-workflow.yml"
     if wf_path.exists():
         wf_path.write_text(
             workflow_with_cron(wf_path.read_text(encoding="utf-8"), cron),
@@ -1754,54 +1983,13 @@ def _schedule_on_github(hour, minute, project_root):
         cwd=project_root,
     )
     if not ok:
-        if "already exists" in out.lower():
-            console.print("[dim]repository already exists - pushing to it[/dim]")
-            _shell(["git", "push", "-u", "origin", "HEAD"], cwd=project_root)
-        else:
-            console.print(Panel(f"[bold red]Could not create the repository.[/bold red]\n\n"
-                                f"{out.strip()[:600]}", border_style="red"))
-            return
-
-    # The full owner/name. gh wants OWNER/REPO anywhere a repository is named,
-    # and a bare folder name is rejected - which is what silently lost every
-    # secret the first time.
-    ok, out = _shell(["gh", "repo", "view", "--json", "nameWithOwner",
-                      "-q", ".nameWithOwner"], cwd=project_root)
-    full_name = out.strip().splitlines()[0].strip() if ok and out.strip() else repo
-
-    # 5. The secrets, one at a time, each value on stdin so it never appears in
-    #    a command line that other processes on the machine can read. No
-    #    --repo: inside the repository gh reads it from the remote.
-    sent, failed = 0, []
-    for name, value in sorted(secrets.items()):
-        ok, out = _shell(["gh", "secret", "set", name],
-                         cwd=project_root, stdin_text=value)
-        if ok:
-            sent += 1
-        else:
-            failed.append(name)
-            console.print(f"[yellow]could not set {name}: {out.strip()[:120]}[/yellow]")
-
-    # A scheduled run with no key fails on the very first email, so this is not
-    # a detail to mention in passing - it decides whether any of this works.
-    # Announcing "it is live" here would be the same lie the reports used to
-    # tell when they called a sent reply a draft.
-    if failed:
-        listed = "\n  ".join(failed)
-        console.print(Panel(
-            f"[bold red]{len(failed)} of {len(secrets)} secrets did not upload, "
-            f"so this is NOT working yet.[/bold red]\n\n  {listed}\n\n"
-            f"The repository exists and the daily time is set, but a run without "
-            f"its keys fails on the first email.\n\n"
-            f"Add them here:\n"
-            f"  https://github.com/{full_name}/settings/secrets/actions\n\n"
-            f"or fix the problem above and run [bold]email-workflow schedule[/bold] "
-            f"again - it is safe to repeat.",
-            title="Not finished",
-            border_style="red",
-        ))
+        console.print(Panel(f"[bold red]Could not create the repository.[/bold red]\n\n"
+                            f"{out.strip()[:600]}", border_style="red"))
         return
-    console.print(f"[dim]uploaded all {sent} secrets[/dim]")
+
+    full_name = _existing_github_repo(project_root) or repo
+    if not _upload_secrets(project_root, secrets, full_name):
+        return
 
     console.print(Panel(
         f"[bold green]It is live.[/bold green]\n\n"
@@ -1851,17 +2039,11 @@ def schedule(
         console.print("[bold red]--where must be 'computer' or 'github'.[/bold red]")
         raise typer.Exit(code=1)
 
-    while True:
-        text = at or Prompt.ask("What time each day?", default="07:30")
-        try:
-            hour, minute = parse_time(text)
-            break
-        except ValueError as e:
-            console.print(f"[red]{e}[/red]")
-            if at:
-                raise typer.Exit(code=1)
-
     if where == "computer":
+        hour, minute = _ask_time() if not at else parse_time(at)
         _schedule_on_this_computer(hour, minute, project_root)
     else:
-        _schedule_on_github(hour, minute, project_root)
+        # The time is asked further in: with a repository already set up,
+        # the answer is usually "run it now" or "show me the runs", and
+        # neither needs one.
+        _schedule_on_github(project_root, preset=parse_time(at) if at else None)

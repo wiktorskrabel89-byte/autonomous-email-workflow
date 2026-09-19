@@ -7,6 +7,94 @@ and multi-channel reports (Terminal, Discord, Email, WhatsApp).
 
 ---
 
+## What it can do
+
+**Reads your unread mail and decides.** Every message is classified, weighed for
+importance and urgency, and then one of these happens:
+
+| Decision | What it does to the email |
+|---|---|
+| Archive / Ignore | marked read and taken out of the inbox (Gmail: it lands in All Mail, never Trash) |
+| Reply automatically | sends the reply, but only through the safety gate below |
+| Draft a reply | writes it, saves it as a real draft, stars the original |
+| Wait for approval | same, and says so - it is waiting on you |
+| Escalate | leaves it unread, stars and labels it, tells you why |
+
+**It refuses to send when it should.** Sending is off until you turn it on, and
+even then a reply is held back as a draft if it invents a fact, leaves a
+`[NEEDS INPUT: ...]` gap, promises anything (a time, a price, a deliverable),
+falls below your confidence threshold, or the category is not on your trusted
+list. Anything about money, passwords or account access is escalated to you and
+can never be answered automatically.
+
+**It never handles the same email twice.** Thread supersession means a newer
+message in a thread cancels work planned for an older one, and an idempotency
+record survives restarts - so a crash mid-run does not produce a second reply.
+
+**Everything is written down.** An append-only audit log records what was
+decided and why, and `email-workflow replay` walks a thread's whole history back
+for you.
+
+### Your AI, your keys
+
+- **Providers:** Google Gemini, Groq, OpenAI, OpenRouter, or a local model
+  through Ollama. Also a zero-key offline mode for trying it out.
+- **Automatic failover:** when a provider hits its quota or dies mid-run, the
+  work continues on the next one that has a key, and the local model is the
+  last resort.
+- **Several keys at once**, including keys from different accounts - a free tier
+  belongs to an account, so three Gemini keys are three allowances. It works
+  several emails at the same time, one key each.
+- **Two keys can team up on one email:** one writes the reply, a *different* one
+  reviews it before it can be sent and can block it.
+- **It stays inside the free tier** with a sliding-window rate limiter per key,
+  and `email-workflow usage` shows what each key has spent - per account.
+
+### Where it runs
+
+- **Windows, macOS and Linux.** Python 3.10+, every dependency pure Python.
+- **On a schedule:** `email-workflow schedule` sets up Task Scheduler, a launchd
+  agent or cron - or puts it on **GitHub Actions**, free, so it runs with your
+  computer switched off.
+- **Offline:** point it at Ollama and nothing leaves your machine.
+
+### Mailboxes and reports
+
+- **Gmail**, **Outlook / Office 365**, or any **IMAP** server. Only Gmail can be
+  archived safely over IMAP; elsewhere mail is marked read and left where it is,
+  on purpose.
+- **Reports** to your terminal, **Discord**, **email** or **WhatsApp** (Twilio),
+  immediately or as one digest per run.
+
+### Yours, and private
+
+- A **login** guards the app, because it can read your mail and send as you. The
+  password is stored as a PBKDF2-SHA256 hash with 600,000 iterations, never in
+  plain text.
+- Your keys live in `.env`, your knowledge base in `known_facts.txt`, and both
+  are gitignored. `email-workflow reset` clears everything personal before you
+  share the folder.
+- Nothing is uploaded anywhere unless you deliberately schedule a cloud run, and
+  that step lists every secret by name and waits for a yes.
+
+### The commands
+
+| Command | What it is for |
+|---|---|
+| `email-workflow` | the menu, if you would rather not remember any of this |
+| `run` | process the inbox now |
+| `schedule` | run it every day - this computer, or GitHub |
+| `setup` | the wizard: provider, key, model, mailbox, reports |
+| `demo` | see it work with no key and no network |
+| `settings` | sending and mailbox behaviour |
+| `facts` | edit what the AI is allowed to state as fact about you |
+| `usage` | how much of each key you have spent |
+| `providers` / `models` | which keys are set, which models are available |
+| `log` / `replay` | the audit log, and one thread's whole history |
+| `testmail` / `test_report` | check the mailbox and the report channels |
+| `passwd` / `reset` | change the login, or clear your personal files |
+
+---
 ## Get it
 
 Works the same on **Windows, macOS and Linux**. You need **Python 3.10 or newer**
@@ -365,6 +453,10 @@ a yes. It refuses outright if `.gitignore` is not protecting your `.env`, your
 login and your knowledge base: a private repository is still a copy of those
 files on someone else's computer, and one click can make a repository public
 later.
+
+Run it again once it is set up and you get a short menu instead of a second
+repository: change the time, **run it now**, see how the last runs went, upload
+your keys again, or point the folder at a different repository.
 
 You need `git` and the GitHub CLI (`gh`). If either is missing it tells you the
 one command that installs it on your system.

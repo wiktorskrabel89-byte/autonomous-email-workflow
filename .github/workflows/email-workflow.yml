@@ -96,13 +96,22 @@ jobs:
           EMAIL_WORKFLOW_ROOT: ${{ github.workspace }}
         run: email-workflow usage
 
-      # The audit log is the record of what was decided and why. Kept for 30
-      # days so a surprising decision can be traced after the fact.
+      # The audit log is the record of what was decided and why, kept so a
+      # surprising decision can be traced afterwards.
+      #
+      # continue-on-error, deliberately: this is a convenience, and it must
+      # never fail the run. A full artifact storage quota - which is easy to
+      # reach on a free account - was turning a run that had already triaged
+      # the inbox perfectly well into a red cross.
+      #
+      # Seven days rather than thirty, for the same reason: the log is also
+      # written into the cache, so this is only the copy you can download.
       - name: Keep the audit log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: audit-log
           path: audit.jsonl
-          retention-days: 30
+          retention-days: 7
           if-no-files-found: ignore
