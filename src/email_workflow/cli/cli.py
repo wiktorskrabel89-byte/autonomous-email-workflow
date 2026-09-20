@@ -347,109 +347,80 @@ def passwd():
 
 from email_workflow.core.known_facts import KnownFactsManager, append_fact, facts_lost
 
+# The menu as data. The numbering, the list of choices the app will accept and
+# what each one runs all come out of this one list, so removing an entry cannot
+# leave a gap in the numbers, a number the app then refuses, or a branch still
+# wired to whatever used to sit there. Three separate places had to agree
+# before, and adding one option was enough to break the agreement.
+#
+# The actions are lambdas so the names resolve when the entry is chosen, not
+# when this list is built.
+def menu_entries():
+    return [
+        ("Run Email Pipeline",
+         "only UNREAD mail from the last 7 days",
+         lambda: run(config_file="config.yaml", mock_inbox=None, loop=False,
+                     interval=60, schedule=None)),
+        ("Set Up a Daily Run",
+         "this computer, or GitHub so it runs with the PC off",
+         lambda: schedule(at=None, where=None)),
+        ("Interactive Setup Wizard",
+         "Provider, Key, Model, Gmail, Notifications",
+         lambda: setup()),
+        ("View Active Settings Dashboard", "",
+         lambda: dashboard()),
+        ("Edit Personal Knowledge Base & Known Facts",
+         "what it may say about you",
+         lambda: facts()),
+        ("Sort Mail Into Your Own Labels",
+         "Rabaty, Praca - filed, not just archived",
+         lambda: labels()),
+        ("Send Yourself Test Emails",
+         "one per label, so you can watch it sort them",
+         lambda: testmail(to=None, yes=False)),
+        ("Sending & Mailbox Settings",
+         "send replies? keep drafts?",
+         lambda: settings()),
+        ("Check Provider API Key Status", "",
+         lambda: providers()),
+        ("Test Notification & Escalation Report Delivery", "",
+         lambda: test_report(channel=None)),
+        ("Update the App",
+         "get the newest version, keeps your settings",
+         lambda: update(check=False)),
+    ]
+
+
 def interactive_main_menu():
     """Interactive main menu with numbered options."""
     while True:
         console.clear()
         print_banner("AUTONOMOUS EMAIL WORKFLOW - MAIN MENU")
 
-        menu_text = (
-            "[bold cyan]Please select an action:[/bold cyan]\n\n"
-            "[bold yellow]1.[/bold yellow] Run Email Pipeline "
-            "[dim](only UNREAD mail from the last 7 days)[/dim]\n"
-            "[bold yellow]2.[/bold yellow] Set Up a Daily Run "
-            "[dim](this computer, or GitHub so it runs with the PC off)[/dim]\n"
-            "[bold yellow]3.[/bold yellow] Interactive Setup Wizard (Provider, Key, Model, Gmail, Notifications)\n"
-            "[bold yellow]4.[/bold yellow] View Active Settings Dashboard\n"
-            "[bold yellow]5.[/bold yellow] Edit Personal Knowledge Base & Known Facts (Set schedules, project info, rules)\n"
-            "[bold yellow]6.[/bold yellow] Run Offline Demo Mode (Zero API keys needed)\n"
-            "[bold yellow]7.[/bold yellow] Check Provider API Key Status\n"
-            "[bold yellow]8.[/bold yellow] View Audit Logs\n"
-            "[bold yellow]9.[/bold yellow] Replay Thread Supersession History\n"
-            "[bold yellow]10.[/bold yellow] Test Notification & Escalation Report Delivery\n"
-            "[bold yellow]11.[/bold yellow] Sending & Mailbox Settings "
-            "[dim](send replies? keep drafts?)[/dim]\n"
-            "[bold yellow]12.[/bold yellow] Update the App "
-            "[dim](get the newest version, keeps your settings)[/dim]\n"
-            "[bold yellow]13.[/bold yellow] Sort Mail Into Your Own Labels "
-            "[dim](Rabaty, Job offers - filed, not just archived)[/dim]\n"
-            "[bold yellow]14.[/bold yellow] Send Yourself Test Emails "
-            "[dim](one per label, so you can watch it sort them)[/dim]\n"
-            "[bold yellow]15.[/bold yellow] Exit\n"
+        entries = menu_entries()
+        lines = ["[bold cyan]Please select an action:[/bold cyan]\n"]
+        for number, (label, hint, _) in enumerate(entries, 1):
+            line = f"[bold yellow]{number}.[/bold yellow] {label}"
+            if hint:
+                line += f" [dim]({hint})[/dim]"
+            lines.append(line)
+        leave = len(entries) + 1
+        lines.append(f"[bold yellow]{leave}.[/bold yellow] Exit")
+        console.print(Panel("\n".join(lines), border_style="cyan"))
+
+        choice = Prompt.ask(
+            "Select option",
+            choices=[str(n) for n in range(1, leave + 1)],
+            default="1",
         )
-        console.print(Panel(menu_text, border_style="cyan"))
 
-        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"], default="1")
-
-        if choice == "1":
-            console.clear()
-            run(config_file="config.yaml", mock_inbox=None, loop=False, interval=60, schedule=None)
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "2":
-            console.clear()
-            # The real thing: it registers a daily task with the operating
-            # system, or sets it up on GitHub. What used to be here only
-            # blocked this window until the chosen time and ran once -
-            # closing the terminal cancelled it, which is not a schedule.
-            # That is still there as "run --schedule HH:MM" for a one-off.
-            schedule(at=None, where=None)
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "3":
-            console.clear()
-            setup()
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "4":
-            console.clear()
-            dashboard()
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "5":
-            console.clear()
-            facts()
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "6":
-            console.clear()
-            demo()
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "7":
-            console.clear()
-            providers()
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "8":
-            console.clear()
-            tid = Prompt.ask("Filter by Thread ID (leave empty for all)", default="")
-            log(thread_id=tid if tid.strip() else None, audit_file="audit.jsonl")
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "9":
-            console.clear()
-            tid = Prompt.ask("Enter Thread ID to replay", default="thread_meet_02")
-            try:
-                replay(thread_id=tid, state_file="state.json", audit_file="audit.jsonl")
-            except Exception as e:
-                console.print(f"[red]Replay error: {e}[/red]")
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "10":
-            console.clear()
-            test_report(channel=None)
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "11":
-            console.clear()
-            settings()
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "12":
-            console.clear()
-            update(check=False)
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "13":
-            console.clear()
-            labels()
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "14":
-            console.clear()
-            testmail(to=None, yes=False)
-            Prompt.ask("\nPress Enter to return to main menu")
-        elif choice == "15":
+        if choice == str(leave):
             console.print("[bold green]Goodbye![/bold green]")
             sys.exit(0)
+
+        console.clear()
+        entries[int(choice) - 1][2]()
+        Prompt.ask("\nPress Enter to return to main menu")
 
 @app.command()
 def dashboard():

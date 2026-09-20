@@ -298,7 +298,10 @@ def test_menu_option_two_opens_the_real_scheduler(project, monkeypatch):
     monkeypatch.setattr(cli_module, "schedule",
                         lambda at=None, where=None: opened.append((at, where)))
 
-    result = runner.invoke(cli_module.app, [], input="2\n\n12\n")
+    result = runner.invoke(
+        cli_module.app, [],
+        input=f"{menu_option('Set Up a Daily Run')}\n\n{menu_quit()}\n",
+    )
 
     assert opened == [(None, None)], "option 2 did not open the scheduler"
     assert "Set Up a Daily Run" in result.output
@@ -306,7 +309,7 @@ def test_menu_option_two_opens_the_real_scheduler(project, monkeypatch):
 
 def test_the_menu_no_longer_offers_the_blocking_wait(project):
     write_config(project, require_login=False)
-    result = runner.invoke(cli_module.app, [], input="12\n")
+    result = runner.invoke(cli_module.app, [], input=f"{menu_quit()}\n")
     assert "Schedule Daily Run at Specific Time" not in result.output, (
         "the old label promised a schedule it did not deliver"
     )
@@ -418,6 +421,23 @@ def test_keys_are_not_uploaded_without_a_yes(project, monkeypatch):
     sent = [c for c in calls if c[:3] == ["gh", "secret", "set"]]
     assert not sent, "keys went to GitHub without a yes"
 
+def menu_option(label_starts_with: str) -> str:
+    """The number of the menu entry whose label starts with this.
+
+    Looked up rather than written down: the numbers move whenever an option is
+    added or removed, and a test that types "12" then fails for a reason that
+    has nothing to do with what it is testing.
+    """
+    for number, (label, _hint, _action) in enumerate(cli_module.menu_entries(), 1):
+        if label.startswith(label_starts_with):
+            return str(number)
+    raise AssertionError(f"no menu entry starts with {label_starts_with!r}")
+
+
+def menu_quit() -> str:
+    return str(len(cli_module.menu_entries()) + 1)
+
+
 def test_the_menu_offers_updating(project, monkeypatch):
     """A command nobody can find is a command nobody uses. Both the scheduler
     and the updater were written, shipped, and then missing from this list."""
@@ -425,10 +445,13 @@ def test_the_menu_offers_updating(project, monkeypatch):
     opened = []
     monkeypatch.setattr(cli_module, "update", lambda check=False: opened.append(check))
 
-    result = runner.invoke(cli_module.app, [], input="12\n\n13\n")
+    picked = menu_option("Update the App")
+    result = runner.invoke(
+        cli_module.app, [], input=f"{picked}\n\n{menu_quit()}\n"
+    )
 
     assert "Update the App" in result.output
-    assert opened == [False], "option 12 did not open the updater"
+    assert opened == [False], f"option {picked} did not open the updater"
 
 
 def menu_numbers(project) -> set:
