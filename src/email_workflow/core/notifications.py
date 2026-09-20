@@ -85,6 +85,12 @@ class NotificationDispatcher:
         results = {}
         report_text = self._build_report_text(message, analysis, decision, draft_id, reply_text)
 
+        # One report at the end says all of this, and says it once. A ping
+        # per email is how a busy inbox turns into a dozen notifications in a
+        # minute, each repeating a line of the report that follows.
+        if not getattr(self.config, "per_email", False):
+            return {}
+
         channel = self.config.channel.lower()
 
         # Terminal channel

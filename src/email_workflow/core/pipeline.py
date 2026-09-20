@@ -446,7 +446,7 @@ class WorkflowPipeline:
             self.idempotency.update_stage(email.message_id, email.thread_id, ProcessingStage.ESCALATED)
 
             self.notifier.notify(email, analysis, decision, draft_id=None)
-            final_action_summary = f"Escalated and starred ({decision_reason})"
+            final_action_summary = f"Left for you ({decision_reason})"
 
         # Filed mail leaves the inbox. The label is where it lives now, and a
         # copy left in the inbox as well would mean the sorting changed nothing

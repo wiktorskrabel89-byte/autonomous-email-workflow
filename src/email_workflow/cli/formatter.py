@@ -1,3 +1,4 @@
+import re
 from typing import List, Dict, Any
 from rich.console import Console
 from rich.panel import Panel
@@ -10,6 +11,59 @@ console = Console()
 
 def print_banner(title: str):
     console.print(Panel(f"[bold cyan]{title}[/bold cyan]", border_style="cyan", expand=True))
+
+
+# What happened, in words somebody who did not write this would use.
+# "ESCALATE", "NOTIFY_ME", "AUTOMATICALLY_REPLY" are names from inside the
+# program - they say which branch ran, not what became of the email.
+PLAIN_DECISION = {
+    DecisionOption.ARCHIVE: ("Put away", "blue"),
+    DecisionOption.IGNORE: ("Put away", "blue"),
+    DecisionOption.NOTIFY_ME: ("Needs you", "yellow"),
+    DecisionOption.ESCALATE: ("Needs you", "yellow"),
+    DecisionOption.CREATE_DRAFT: ("Draft written", "cyan"),
+    DecisionOption.WAIT_FOR_APPROVAL: ("Draft written, waiting for you", "cyan"),
+    DecisionOption.AUTOMATICALLY_REPLY: ("Replied", "green"),
+}
+
+# The reasons come out of the decision engine, which talks to itself about
+# hard safety rules and confidence thresholds. Said out loud they are alarming
+# and say nothing useful; these are the same facts, for a person.
+def plain_reason(summary: str) -> str:
+    text = summary or ""
+    swaps = [
+        ("Hard safety rule triggered: Hard safety category 'financial'",
+         "money is involved, so a person decides"),
+        ("Hard safety rule triggered: Hard safety category 'security'",
+         "it is about your account, so a person decides"),
+        ("Hard safety rule triggered: Missing required information:",
+         "it needs something you never told it:"),
+        ("Hard safety rule triggered: Hard safety keyword",
+         "it mentions something a person should read"),
+        ("Hard safety rule triggered:", "a person should look at this:"),
+        ("No response required for informational email. Archiving.",
+         "nothing to answer"),
+        ("No response required. Ignoring.", "nothing to answer"),
+        ("Escalated and starred", "left for you"),
+        ("Automatically replied", "answered"),
+        ("Archived", "filed"),
+    ]
+    # The engine writes "<what it did> (<why>)". The what is already its own
+    # row, so only the why is left here - repeating it reads like stuttering.
+    bracketed = re.match(r"[^(]*\((?P<why>.*)\)", text.strip())
+    if bracketed:
+        text = bracketed.group("why")
+    for old, new in swaps:
+        text = text.replace(old, new)
+    text = text.strip()
+    # What is left of a sent reply or a saved draft is the id the server gave
+    # it. That is bookkeeping, not a reason, and it is in the audit log.
+    if text.startswith("ID: sent_") or text.startswith("sent_"):
+        text = "answered from what it knows about you"
+    elif text.startswith("ID: draft_") or text.startswith("draft_"):
+        text = "saved in your drafts for you to send"
+    return (text[0].upper() + text[1:]) if text else ""
+
 
 def render_stage_result(step_num: int, result: Dict[str, Any]):
     analysis = result.get("analysis")
@@ -39,21 +93,16 @@ def render_stage_result(step_num: int, result: Dict[str, Any]):
         console.print(table)
         return
 
-    color = "yellow"
-    if decision == DecisionOption.AUTOMATICALLY_REPLY:
-        color = "green"
-    elif decision == DecisionOption.ESCALATE:
-        color = "red"
-    elif decision == DecisionOption.ARCHIVE or decision == DecisionOption.IGNORE:
-        color = "blue"
+    _, color = PLAIN_DECISION.get(decision, ("", "yellow"))
 
-    table = Table(title=f"Stage Result #{step_num} - Message ID: {msg_id}", border_style=color, show_header=True)
+    table = Table(title=f"#{step_num}", border_style=color, show_header=True)
     table.add_column("Property", style="bold")
     table.add_column("Value")
 
     if analysis:
         table.add_row("Subject", analysis.subject)
-        table.add_row("Sender", f"{analysis.sender.name} <{analysis.sender.email}>")
+        name, addr = analysis.sender.name, analysis.sender.email
+        table.add_row("Sender", addr if name in ("", addr) else f"{name} <{addr}>")
         table.add_row("Category", f"[{color}]{analysis.category.value}[/{color}]")
         table.add_row("Importance / Urgency", f"{analysis.importance.value} / {analysis.urgency.value}")
         table.add_row("Confidence", f"{analysis.confidence:.2f}")
@@ -62,8 +111,13 @@ def render_stage_result(step_num: int, result: Dict[str, Any]):
         if analysis.commitments_implied:
             table.add_row("Commitments Implied", ", ".join(analysis.commitments_implied))
 
-    table.add_row("Decision", f"[{color}]{decision.value.upper()}[/{color}]")
-    table.add_row("Summary Action", summary)
+    filed = result.get("filed_under")
+    if filed:
+        table.add_row("Filed under", f"[bold {color}]{filed}[/bold {color}]")
+
+    label, _ = PLAIN_DECISION.get(decision, (decision.value.replace("_", " ").title(), color))
+    table.add_row("What happened", f"[{color}]{label}[/{color}]")
+    table.add_row("Why", plain_reason(summary))
 
     console.print(table)
 

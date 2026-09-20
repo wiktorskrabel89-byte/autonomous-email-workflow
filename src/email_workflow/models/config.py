@@ -250,6 +250,13 @@ class NotificationsConfig(BaseModel):
     # repeats what the run already printed, and the raw message ids render as
     # mailto: links in Discord.
     show_message_breakdown: bool = False
+    # Send a message for every single email that needs you, as it happens.
+    #
+    # Off: one report at the end of the run is enough, and it already lists
+    # what is waiting for you and which label it is under. On a real inbox the
+    # per-email version means a dozen Discord pings in one minute, each one
+    # repeating what the report says at the end anyway.
+    per_email: bool = False
 
 class StateConfig(BaseModel):
     store: str = "state.json"

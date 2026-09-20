@@ -26,17 +26,17 @@ def _reason_to_keep(analysis: EmailAnalysis, kept_label: str = "") -> Optional[s
     if kept_label:
         return (
             f"Filed under '{kept_label}', which you asked to keep in your "
-            f"inbox. Left where you will see it."
+            f"inbox. Left in your inbox for you."
         )
     if analysis.protected_topic:
         return (
             f"You asked never to archive anything about "
-            f"'{analysis.protected_topic}'. Starred and left in your inbox."
+            f"'{analysis.protected_topic}'. Left in your inbox for you."
         )
     if analysis.personally_addressed:
         return (
             "Written to you about something of yours, not sent to a list. "
-            "Starred and left in your inbox."
+            "Left in your inbox for you."
         )
     # The archive branch used to ignore importance completely, so a message the
     # model itself had called high-importance was archived anyway if it needed
@@ -44,7 +44,7 @@ def _reason_to_keep(analysis: EmailAnalysis, kept_label: str = "") -> Optional[s
     if ImportanceLevel.HIGH in (analysis.importance, analysis.urgency):
         return (
             f"No reply needed, but this is {analysis.importance.value} importance "
-            f"and {analysis.urgency.value} urgency. Starred and left in your inbox."
+            f"and {analysis.urgency.value} urgency. Left in your inbox for you."
         )
     return None
 
