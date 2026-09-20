@@ -200,3 +200,39 @@ def test_which_labels_are_kept_is_read_from_your_config():
     assert _label_is_kept("Rabaty", config) is False
     assert _label_is_kept("Nonsense", config) is False
     assert _label_is_kept("", config) is False
+
+
+# --- filed mail leaves the inbox --------------------------------------------
+
+def test_a_filed_email_is_taken_out_of_the_inbox():
+    """His words: when it puts mail into labels, it should take it out of the
+    main inbox and leave it only in the label. A copy in both means the
+    sorting changed nothing you can see."""
+    from email_workflow.models.config import AppConfig
+
+    config = AppConfig()
+    config.email.labelled_leave_inbox = True
+    config.email.labels = [EmailLabel(name="Zakupy", about="parcels")]
+    assert config.email.labelled_leave_inbox is True
+
+
+def test_it_is_off_until_you_ask_for_it():
+    """Quietly emptying somebody's inbox is not a default."""
+    from email_workflow.models.config import AppConfig
+
+    assert AppConfig().email.labelled_leave_inbox is False
+
+
+def test_a_kept_label_still_overrides_it():
+    """That is how one or two piles stay in front of you."""
+    from email_workflow.core.pipeline import _label_is_kept
+    from email_workflow.models.config import AppConfig
+
+    config = AppConfig()
+    config.email.labelled_leave_inbox = True
+    config.email.labels = [
+        EmailLabel(name="Praca", about="job mail", keep_in_inbox=True),
+        EmailLabel(name="Rabaty", about="discounts"),
+    ]
+    assert _label_is_kept("Praca", config) is True
+    assert _label_is_kept("Rabaty", config) is False

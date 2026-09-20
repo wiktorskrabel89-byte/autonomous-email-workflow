@@ -81,7 +81,30 @@ RESERVED_GMAIL_LABELS = frozenset({
 })
 
 
-def gmail_label(name: str) -> str:
+# The same names in the languages this is actually used in. Gmail localises
+# its system labels - the Polish account this was written for shows them as
+# "Wazne", "Oznaczone gwiazdka", "Wszystkie", "Kosz", "Wersje robocze" - and a
+# user label of that name collides exactly as "Important" did in English.
+# Reading them off the server (system_label_names) covers every language; this
+# list is what is used before the server has been asked.
+RESERVED_LOCALISED = frozenset({
+    # Polish
+    "wazne", "ważne", "oznaczone gwiazdka", "oznaczone gwiazdką",
+    "wszystkie", "cala poczta", "cała poczta", "kosz", "wyslane",
+    "wysłane", "wersje robocze", "powiadomienia", "spolecznosci",
+    "społeczności", "oferty",
+    # German
+    "wichtig", "markiert", "alle nachrichten", "papierkorb", "gesendet",
+    "entwurfe", "entwürfe", "werbung", "soziale netzwerke",
+    # Spanish / French / Italian
+    "importante", "destacados", "todos", "papelera", "enviados", "borradores",
+    "important", "suivis", "tous les messages", "corbeille", "envoyes",
+    "envoyés", "brouillons", "importanti", "speciali", "cestino",
+    "inviati", "bozze",
+})
+
+
+def gmail_label(name: str, also_reserved=()) -> str:
     """One label, ready to put in an X-GM-LABELS command.
 
     A name starting with a backslash is one of Gmail's own (\\Important) and
@@ -95,7 +118,8 @@ def gmail_label(name: str) -> str:
         return ""
     if name.startswith("\\"):
         return name
-    if name.lower() in RESERVED_GMAIL_LABELS:
+    taken = {str(other).strip().lower() for other in (also_reserved or ())}
+    if name.lower() in RESERVED_GMAIL_LABELS | RESERVED_LOCALISED | taken:
         name = f"AI/{name}"
     return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -185,6 +209,46 @@ class EmailProvider(ABC):
     def fetch_unprocessed_emails(self) -> List[EmailMessage]:
         """Fetch pending / unprocessed emails from mailbox."""
         pass
+
+    def system_label_names(self, mail) -> set:
+        r"""What THIS server calls its own labels, in its own language.
+
+        The hardcoded lists above are guesses; this is the answer. Every folder
+        the server marks with a system-use flag (\Important, \Starred, \All,
+        \Trash, \Sent, \Drafts, \Junk) has a display name, and on a Polish
+        account those names are Wazne, Oznaczone gwiazdka, Wszystkie and so on.
+        A user label of the same name collides exactly as "Important" did in
+        English - so this is what makes the fix work in any language rather
+        than only in the ones somebody thought to type out.
+
+        Asked once per provider and remembered. Never raises: a lookup that
+        fails falls back to the lists, which is where we were before.
+        """
+        if self._system_names is not None:
+            return self._system_names
+
+        # Structure, not system use: every folder has these.
+        STRUCTURAL = {r"\hasnochildren", r"\haschildren", r"\noselect",
+                      r"\noinferiors", r"\marked", r"\unmarked",
+                      r"\subscribed"}
+        names = set()
+        try:
+            status, lines = mail.list()
+            if status == "OK":
+                for line in lines or []:
+                    parsed = _parse_list_line(line)
+                    if not parsed:
+                        continue
+                    flags, name = parsed
+                    if any(f.startswith("\\") and f not in STRUCTURAL
+                           for f in flags):
+                        # "[Gmail]/Wersje robocze" -> "Wersje robocze"
+                        names.add(name.rsplit("/", 1)[-1].strip().lower())
+        except Exception:
+            pass
+
+        self._system_names = names
+        return names
 
     def apply_label(self, message_id: str, label: str) -> None:
         """File a message under one of the user's own labels.
@@ -291,6 +355,8 @@ class GmailProvider(EmailProvider):
         self.drafts_folder = os.getenv("IMAP_DRAFTS_FOLDER", "").strip()
         # What the server said its Drafts folder is, once it has been asked.
         self._found_drafts_folder = ""
+        # What this server calls its own labels. None = not asked yet.
+        self._system_names = None
         self._folders_seen: List[str] = []
         # X-GM-LABELS is a Gmail extension; other servers reject it.
         self.supports_gmail_labels = True
@@ -711,13 +777,19 @@ class GmailProvider(EmailProvider):
                         self._store(mail, num, "+FLAGS", add_flags,
                                     f"{what} {message_id}")
                     if add_labels and self.supports_gmail_labels:
-                        # Gmail makes the label exist on first use.
-                        label = gmail_label(add_labels)
+                        # Gmail makes the label exist on first use - but not
+                        # under a name it already uses for one of its own, in
+                        # whatever language this account is in.
+                        label = gmail_label(
+                            add_labels, self.system_label_names(mail)
+                        )
                         if label:
                             self._store(mail, num, "+X-GM-LABELS", label,
                                         f"put the label {label} on {message_id}")
                     if remove_labels and self.supports_gmail_labels:
-                        label = gmail_label(remove_labels)
+                        label = gmail_label(
+                            remove_labels, self.system_label_names(mail)
+                        )
                         if label:
                             self._store(mail, num, "-X-GM-LABELS", label,
                                         f"take the label {label} off {message_id}")

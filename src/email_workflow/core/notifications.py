@@ -113,33 +113,61 @@ class NotificationDispatcher:
             return {}
 
         total = len(run_results)
-        auto_replied = [r for r in run_results if r.get("decision") == DecisionOption.AUTOMATICALLY_REPLY]
-        drafted = [r for r in run_results if r.get("decision") in (DecisionOption.CREATE_DRAFT, DecisionOption.WAIT_FOR_APPROVAL)]
-        escalated = [r for r in run_results if r.get("decision") in (DecisionOption.ESCALATE, DecisionOption.NOTIFY_ME)]
-        archived = [r for r in run_results if r.get("decision") in (DecisionOption.ARCHIVE, DecisionOption.IGNORE)]
 
         by_label = group_by_label(run_results)
+        waiting = [
+            r for r in run_results
+            if r.get("decision") in (
+                DecisionOption.ESCALATE, DecisionOption.NOTIFY_ME,
+                DecisionOption.WAIT_FOR_APPROVAL,
+            )
+        ]
+        replied = [r for r in run_results
+                   if r.get("decision") == DecisionOption.AUTOMATICALLY_REPLY]
+        drafts = [r for r in run_results
+                  if r.get("decision") == DecisionOption.CREATE_DRAFT]
+        sorted_away = len(run_results) - len(waiting)
 
+        # Written for somebody reading it on their phone. The old version led
+        # with "Auto-Replied / Drafted / Escalated / Blocked", which are words
+        # from inside the program: they say what the code did, not what
+        # happened to your mail. What happened to your mail is that most of it
+        # was put away and a few things want you.
         lines = [
-            "=== BATCH RUN COMPLETION SUMMARY REPORT ===",
-            f"AI Engine: {provider_name} ({model_name})",
-            f"Total Emails Processed: {total}",
-            f"  - Auto-Replied: {len(auto_replied)}",
-            f"  - Drafts / Awaiting Approval: {len(drafted)}",
-            f"  - Escalated / Human Review: {len(escalated)}",
-            f"  - Archived / Ignored: {len(archived)}",
+            f"Your inbox: {len(run_results)} handled",
+            f"  {sorted_away} put away, {len(waiting)} waiting for you",
         ]
 
-        # What went where. A count of "42 archived" says nothing about where
-        # any of it ended up; this is the line that makes filing visible.
         if by_label:
-            lines += ["", "--- Filed under your labels ---"]
+            lines.append("")
+            lines.append("Filed under:")
             for label, subjects in by_label.items():
-                lines.append(f"  {label}: {len(subjects)}")
-                for subject in subjects[:5]:
-                    lines.append(f"      - {subject}")
-                if len(subjects) > 5:
-                    lines.append(f"      ... and {len(subjects) - 5} more")
+                lines.append(f"  {label} - {len(subjects)}")
+                for subject in subjects[:4]:
+                    lines.append(f"      {subject}")
+                if len(subjects) > 4:
+                    lines.append(f"      and {len(subjects) - 4} more")
+
+        if waiting:
+            lines.append("")
+            lines.append("Waiting for you:")
+            for item in waiting[:10]:
+                subject = getattr(item.get("analysis"), "subject", "") or item.get("message_id", "")
+                where = item.get("filed_under") or ""
+                lines.append(f"  {subject[:60]}" + (f"   [{where}]" if where else ""))
+            if len(waiting) > 10:
+                lines.append(f"  and {len(waiting) - 10} more")
+
+        if replied or drafts:
+            lines.append("")
+            done = []
+            if replied:
+                done.append(f"{len(replied)} answered")
+            if drafts:
+                done.append(f"{len(drafts)} left as a draft")
+            lines.append("Replies: " + ", ".join(done))
+
+        lines.append(f"\n[{provider_name} / {model_name}]")
 
         # Off by default: it repeats what the run already printed line by line,
         # and the raw message ids turn into mailto: links in Discord.
@@ -157,48 +185,60 @@ class NotificationDispatcher:
         channel = self.config.channel.lower()
 
         if channel in ("terminal", "all"):
-            console.print(Panel(report_text, title="Batch Completion Digest Report", border_style="bold green"))
+            console.print(Panel(report_text, title="Your inbox", border_style="bold green"))
             results["terminal"] = True
 
         if channel in ("discord", "all"):
             url = os.getenv("DISCORD_WEBHOOK_URL")
             if url:
                 embed = {
-                    "title": "📊 Batch Completion Digest Summary Report",
-                    "description": f"**AI Engine:** `{provider_name}` (`{model_name}`)\n**Total Emails Processed:** `{total}`",
-                    "color": 0x00FF00,
-                    "fields": [
-                        {
-                            "name": "📈 Status Breakdown",
-                            "value": (
-                                f"🟢 **Auto-Replied:** `{len(auto_replied)}`\n"
-                                f"🟡 **Drafted / Awaiting Approval:** `{len(drafted)}`\n"
-                                f"🔴 **Escalated / Blocked:** `{len(escalated)}`\n"
-                                f"🔵 **Archived / Ignored:** `{len(archived)}`"
-                            ),
-                            "inline": False,
-                        },
-                    ] + [
-                        # One field per label, so Discord shows them side by
-                        # side as sections rather than as one wall of text.
-                        {
-                            "name": f"🏷️ {label} ({len(subjects)})",
-                            "value": (
-                                "\n".join(f"• {s}" for s in subjects[:8])
-                                + (f"\n… and {len(subjects) - 8} more"
-                                   if len(subjects) > 8 else "")
-                            )[:1024] or "-",
-                            "inline": True,
-                        }
-                        for label, subjects in by_label.items()
-                    ] + [
-                        {
-                            "name": "📬 Processed Messages Breakdown",
-                            "value": report_text[:1024],
-                            "inline": False,
-                        }
-                    ],
-                    "footer": {"text": "Autonomous Email Workflow System"},
+                    "title": "Your inbox is sorted",
+                    "description": (
+                        f"**{total}** handled  ·  **{sorted_away}** put away  ·  "
+                        f"**{len(waiting)}** waiting for you"
+                    ),
+                    # Green when nothing wants you, amber when something does.
+                    # The colour is the part you read from across the room.
+                    "color": 0xF1C40F if waiting else 0x2ECC71,
+                    "fields": (
+                        [
+                            {
+                                "name": f"{label} · {len(subjects)}",
+                                "value": (
+                                    "\n".join(f"· {s}" for s in subjects[:6])
+                                    + (f"\n*and {len(subjects) - 6} more*"
+                                       if len(subjects) > 6 else "")
+                                )[:1024] or "-",
+                                "inline": True,
+                            }
+                            for label, subjects in by_label.items()
+                        ]
+                        + (
+                            [{
+                                "name": f"Waiting for you · {len(waiting)}",
+                                "value": ("\n".join(
+                                    "· " + (getattr(w.get("analysis"), "subject", "")
+                                            or w.get("message_id", ""))[:60]
+                                    + (f"  `{w.get('filed_under')}`"
+                                       if w.get("filed_under") else "")
+                                    for w in waiting[:8]
+                                ) + (f"\n*and {len(waiting) - 8} more*"
+                                     if len(waiting) > 8 else ""))[:1024] or "-",
+                                "inline": False,
+                            }] if waiting else []
+                        )
+                        + (
+                            [{
+                                "name": "Replies",
+                                "value": (
+                                    (f"· {len(replied)} answered\n" if replied else "")
+                                    + (f"· {len(drafts)} left as a draft" if drafts else "")
+                                ) or "-",
+                                "inline": False,
+                            }] if (replied or drafts) else []
+                        )
+                    ),
+                    "footer": {"text": f"{provider_name} / {model_name}"},
                 }
                 payload = {"embeds": [embed]}
                 try:

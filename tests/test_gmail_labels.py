@@ -173,3 +173,62 @@ def test_starring_off_still_labels_it():
     modes = [mode for _, mode, _ in stored()]
     assert "+FLAGS" not in modes
     assert "+X-GM-LABELS" in modes
+
+
+# --- the same, on a mailbox that is not in English --------------------------
+
+POLISH_MAILBOX = [
+    b'(\HasNoChildren) "/" "INBOX"',
+    b'(\HasNoChildren \Trash) "/" "[Gmail]/Kosz"',
+    b'(\Flagged \HasNoChildren) "/" "[Gmail]/Oznaczone gwiazdka"',
+    b'(\HasNoChildren \Important) "/" "[Gmail]/Wazne"',
+    b'(\Drafts \HasNoChildren) "/" "[Gmail]/Wersje robocze"',
+]
+
+
+def test_the_polish_name_for_important_is_reserved_too():
+    """"Wazne" is what a Polish Gmail calls \Important. A user label of that
+    name collides exactly as "Important" does in English - and the list of
+    reserved names was English only, so the fix worked in one language."""
+    assert gmail_label("Wazne") == '"AI/Wazne"'
+    assert gmail_label("Wa\u017cne") == '"AI/Wa\u017cne"'
+    assert gmail_label("Kosz") == '"AI/Kosz"'
+
+
+def test_german_and_spanish_too():
+    assert gmail_label("Wichtig") == '"AI/Wichtig"'
+    assert gmail_label("Importante") == '"AI/Importante"'
+
+
+def test_the_server_is_asked_what_it_calls_its_own_labels():
+    """The lists are guesses; this is the answer, and it works in a language
+    nobody thought to type out."""
+    class PolishGmail:
+        def list(self):
+            return ("OK", list(POLISH_MAILBOX))
+
+    provider = gmail()
+    names = provider.system_label_names(PolishGmail())
+    assert "wazne" in names
+    assert "wersje robocze" in names
+    assert "inbox" not in names, "INBOX carries no system-use flag"
+
+
+def test_a_label_named_after_one_of_them_is_moved_out_of_the_way():
+    class PolishGmail:
+        def list(self):
+            return ("OK", list(POLISH_MAILBOX))
+
+    names = gmail().system_label_names(PolishGmail())
+    assert gmail_label("Oznaczone gwiazdka", names) == '"AI/Oznaczone gwiazdka"'
+    assert gmail_label("Rabaty", names) == '"Rabaty"', "your own name is untouched"
+
+
+def test_asking_the_server_is_never_fatal():
+    """A mailbox that will not answer falls back to the lists, which is where
+    this was before."""
+    class Rude:
+        def list(self):
+            raise OSError("no")
+
+    assert gmail().system_label_names(Rude()) == set()

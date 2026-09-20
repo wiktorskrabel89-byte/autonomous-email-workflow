@@ -182,7 +182,10 @@ def test_the_per_message_breakdown_is_off_by_default(monkeypatch):
     text = digest_text(monkeypatch)
     assert "Detailed Breakdown by Message" not in text
     assert "<m1@x>" not in text, "raw ids turn into mailto: links in Discord"
-    assert "Archived / Ignored" in text, "the totals must still be there"
+    # The totals are still there, in words rather than in the program's own
+    # vocabulary: "Auto-Replied / Drafted / Escalated / Blocked" says what the
+    # code did, not what happened to your mail.
+    assert "put away" in text and "waiting for you" in text
 
 
 def test_the_per_message_breakdown_can_be_switched_back_on(monkeypatch):

@@ -448,6 +448,31 @@ class WorkflowPipeline:
             self.notifier.notify(email, analysis, decision, draft_id=None)
             final_action_summary = f"Escalated and starred ({decision_reason})"
 
+        # Filed mail leaves the inbox. The label is where it lives now, and a
+        # copy left in the inbox as well would mean the sorting changed nothing
+        # you can see. Done last, after whatever was decided has happened, so a
+        # reply is still written and a notification is still sent - this moves
+        # the mail, it does not skip the work.
+        #
+        # Archiving already took it out, and a label marked keep_in_inbox is
+        # the deliberate exception: that is how one or two piles stay in front
+        # of you.
+        if (
+            filed_under
+            and getattr(self.config.email, "labelled_leave_inbox", False)
+            and decision not in (DecisionOption.ARCHIVE, DecisionOption.IGNORE)
+            and not _label_is_kept(filed_under, self.config)
+        ):
+            self.email.archive_email(email.message_id)
+            self.audit.log_event(
+                event_type="archived",
+                message_id=email.message_id,
+                thread_id=email.thread_id,
+                detail=f"Taken out of the inbox; it lives under '{filed_under}' now",
+                run_metadata=run_meta,
+            )
+            final_action_summary += f" - filed under {filed_under}, out of the inbox"
+
         return {
             "message_id": email.message_id,
             "thread_id": email.thread_id,

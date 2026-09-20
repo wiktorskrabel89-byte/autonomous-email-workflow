@@ -209,6 +209,15 @@ class EmailConfig(BaseModel):
     # Gmail makes a label the first time one is used, and a "/" in the name
     # makes it a sub-label: "Zakupy/Rabaty" nests under Zakupy.
     labels: List[EmailLabel] = Field(default_factory=list)
+    # Mail that got one of your labels leaves the inbox, whatever was decided
+    # about it. The label IS where it lives now, so a copy left in the inbox as
+    # well means the sorting changed nothing you can see.
+    #
+    # Off by default: quietly emptying somebody's inbox is not a thing to do
+    # without being asked. On, the inbox ends up holding only what matched no
+    # label at all - and a label marked keep_in_inbox still overrides this,
+    # which is how you keep one or two piles in front of you.
+    labelled_leave_inbox: bool = False
 
 class AutomationConfig(BaseModel):
     level: AutomationLevel = AutomationLevel.AUTONOMOUS
