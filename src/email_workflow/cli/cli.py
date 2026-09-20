@@ -373,11 +373,13 @@ def interactive_main_menu():
             "[dim](get the newest version, keeps your settings)[/dim]\n"
             "[bold yellow]13.[/bold yellow] Sort Mail Into Your Own Labels "
             "[dim](Rabaty, Job offers - filed, not just archived)[/dim]\n"
-            "[bold yellow]14.[/bold yellow] Exit\n"
+            "[bold yellow]14.[/bold yellow] Send Yourself Test Emails "
+            "[dim](one per label, so you can watch it sort them)[/dim]\n"
+            "[bold yellow]15.[/bold yellow] Exit\n"
         )
         console.print(Panel(menu_text, border_style="cyan"))
 
-        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"], default="1")
+        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"], default="1")
 
         if choice == "1":
             console.clear()
@@ -442,6 +444,10 @@ def interactive_main_menu():
             labels()
             Prompt.ask("\nPress Enter to return to main menu")
         elif choice == "14":
+            console.clear()
+            testmail(to=None, yes=False)
+            Prompt.ask("\nPress Enter to return to main menu")
+        elif choice == "15":
             console.print("[bold green]Goodbye![/bold green]")
             sys.exit(0)
 
@@ -1086,6 +1092,16 @@ def _process_inbox(pipeline, email_provider, config):
         scope = "the test inbox"
 
     emails = email_provider.fetch_unprocessed_emails()
+
+    # Say it rather than quietly dropping mail: somebody watching a count of
+    # 9 turn into 8 deserves to know which one went and why.
+    came_back = getattr(email_provider, "skipped_own", 0)
+    if came_back:
+        console.print(
+            f"[dim]Skipped {came_back} repl" + ("ies" if came_back != 1 else "y")
+            + " this app sent itself - they came back to this inbox.[/dim]"
+        )
+
     if not emails:
         console.print(
             f"[dim]Nothing to do - no {scope}.\n"

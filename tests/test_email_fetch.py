@@ -220,3 +220,72 @@ def test_each_provider_gets_its_own_server(name, imap_host, monkeypatch):
 def test_unknown_provider_is_rejected():
     with pytest.raises(ValueError, match="Unknown email provider"):
         get_email_provider(EmailConfig(provider="carrier-pigeon"))
+
+
+# --- the app's own replies must not come back round -------------------------
+
+def test_a_reply_this_app_sent_is_not_read_as_new_mail(monkeypatch):
+    """He saw "Re: [TEST] Krotkie pytanie o godziny pracy" being processed:
+    the app had replied to a message, the reply landed in the same inbox, and
+    the next run read its own words as mail from a stranger. Testing on your
+    own address makes it obvious, but any reply to an address that also
+    arrives here does it.
+    """
+    from email_workflow.providers.email_provider import OUR_OWN_HEADER
+
+    ours = (
+        f"Message-ID: <reply@x>\r\n"
+        f"From: me@example.com\r\n"
+        f"Subject: Re: a question\r\n"
+        f"{OUR_OWN_HEADER}: 1\r\n"
+        f"Auto-Submitted: auto-replied\r\n\r\n"
+        f"Body of our own reply.\r\n"
+    ).encode()
+
+    class OneOfOurs(FakeIMAP):
+        def fetch(self, msg_id, parts):
+            return ("OK", [(b"1 (BODY[] {10}", ours), b")"])
+
+    monkeypatch.setenv("GMAIL_ADDRESS", "me@example.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "pw")
+    monkeypatch.setattr(
+        "email_workflow.providers.email_provider.imaplib.IMAP4_SSL", OneOfOurs
+    )
+    provider = GmailProvider(EmailConfig(provider="gmail"))
+    assert provider.fetch_unprocessed_emails() == []
+    assert provider.skipped_own >= 1, "and it should say that it skipped them"
+
+
+def test_ordinary_mail_is_still_read(monkeypatch):
+    theirs = (
+        b"Message-ID: <them@x>\r\nFrom: ann@example.com\r\n"
+        b"Subject: a real question\r\n\r\nHello.\r\n"
+    )
+
+    class TheirMail(FakeIMAP):
+        def fetch(self, msg_id, parts):
+            return ("OK", [(b"1 (BODY[] {10}", theirs), b")"])
+
+    monkeypatch.setenv("GMAIL_ADDRESS", "me@example.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "pw")
+    monkeypatch.setattr(
+        "email_workflow.providers.email_provider.imaplib.IMAP4_SSL", TheirMail
+    )
+    provider = GmailProvider(EmailConfig(provider="gmail"))
+    assert len(provider.fetch_unprocessed_emails()) >= 1
+    assert provider.skipped_own == 0
+
+
+def test_every_reply_carries_the_mark_and_says_a_machine_wrote_it(monkeypatch):
+    """The second header is RFC 3834: a well-behaved auto-responder on the
+    other end will not answer it, which is what stops two robots emailing
+    each other all night."""
+    from email_workflow.providers.email_provider import OUR_OWN_HEADER
+
+    monkeypatch.setenv("GMAIL_ADDRESS", "me@example.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "pw")
+    provider = GmailProvider(EmailConfig(provider="gmail"))
+    msg = provider._build_reply("<m1@x>", "Re: hi", "body", "ann@example.com")
+
+    assert msg[OUR_OWN_HEADER] == "1"
+    assert msg["Auto-Submitted"] == "auto-replied"

@@ -51,6 +51,12 @@ _DRAFT_NAME_GUESSES = (
 # The app-password page does not mention 2-Step Verification at all: with it
 # off, Google simply says the setting is not available for your account, which
 # reads as a broken page rather than as a missing step.
+# Put on every reply this app sends, and looked for on everything it reads.
+# Not a standard header - it is ours, and that is the point: it means "this
+# app wrote this", not merely "some machine did".
+OUR_OWN_HEADER = "X-Email-Workflow"
+
+
 APP_PASSWORD_HELP = (
     "Gmail needs an App Password - a 16-character one made just for this app. "
     "Your normal Gmail password will not work.\n"
@@ -357,6 +363,9 @@ class GmailProvider(EmailProvider):
         self._found_drafts_folder = ""
         # What this server calls its own labels. None = not asked yet.
         self._system_names = None
+        # How many of our own replies came back this run. Worth saying out
+        # loud rather than silently dropping mail.
+        self.skipped_own = 0
         self._folders_seen: List[str] = []
         # X-GM-LABELS is a Gmail extension; other servers reject it.
         self.supports_gmail_labels = True
@@ -407,6 +416,16 @@ class GmailProvider(EmailProvider):
 
                             subject = _decode_str(msg.get("Subject", "No Subject"))
                             from_hdr = _decode_str(msg.get("From", "Unknown"))
+                            # A reply this app sent, come back round. It
+                            # happens the moment a reply goes to an address
+                            # that also arrives here - testing on yourself is
+                            # the obvious case - and without this it is read
+                            # as new mail from a stranger, filed, and possibly
+                            # replied to in turn.
+                            if msg.get(OUR_OWN_HEADER):
+                                self.skipped_own += 1
+                                continue
+
                             msg_id_hdr = msg.get("Message-ID", f"gmail_msg_{m_id.decode()}")
                             in_reply_to = msg.get("In-Reply-To", None)
                             date_str = msg.get("Date", "")
@@ -477,6 +496,16 @@ class GmailProvider(EmailProvider):
         msg["To"] = to_address or self.address
         msg["In-Reply-To"] = message_id
         msg["References"] = message_id
+        # Our own fingerprint, so the next run knows this one came from here.
+        # Without it, a reply sent to an address that also lands in this
+        # mailbox - which is exactly what happens when you test on yourself -
+        # comes back as new unread mail and gets processed as if a stranger
+        # had written it.
+        msg[OUR_OWN_HEADER] = "1"
+        # The standard way of saying "a machine wrote this" (RFC 3834). A
+        # well-behaved auto-responder on the other end will not reply to it,
+        # which is what stops two robots emailing each other all night.
+        msg["Auto-Submitted"] = "auto-replied"
         return msg
 
     def send_email(self, message_id: str, reply_subject: str, reply_body: str,
