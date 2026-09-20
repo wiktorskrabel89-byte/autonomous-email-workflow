@@ -52,6 +52,14 @@ class RateLimiter:
         # bookkeeping races and the limit is overrun. Workers on other
         # keys hold a different limiter and never touch this one.
         self._turn = threading.Lock()
+        # A second, short-lived lock for the deque itself. available() is
+        # asked by the key pool while choosing a key, from a thread that is
+        # NOT holding the turn lock, and it drops old entries as it counts.
+        # Two threads inside that loop could pop the same entry twice and hit
+        # an empty deque - or, worse, read stale headroom and let the pool
+        # overrun the key's limit, which is the 429 this class exists to stop.
+        # Never held across a sleep, so asking never blocks behind a waiter.
+        self._book = threading.Lock()
         # Called just before a wait starts. Without it the app goes silent for
         # up to a minute and looks like it has frozen.
         self.on_wait = on_wait
@@ -61,6 +69,7 @@ class RateLimiter:
         return self.requests_per_minute > 0
 
     def _forget_old(self, now: float) -> None:
+        """Drop requests that have aged out. Call while holding self._book."""
         cutoff = now - self.window
         while self._recent and self._recent[0] <= cutoff:
             self._recent.popleft()
@@ -69,8 +78,9 @@ class RateLimiter:
         """How many requests could be made right now without waiting."""
         if not self.enabled:
             return 0
-        self._forget_old(self._clock())
-        return max(0, self.requests_per_minute - len(self._recent))
+        with self._book:
+            self._forget_old(self._clock())
+            return max(0, self.requests_per_minute - len(self._recent))
 
     def wait(self) -> float:
         """Block until one request is allowed. Returns seconds waited."""
@@ -81,15 +91,15 @@ class RateLimiter:
 
     def _wait_my_turn(self) -> float:
         now = self._clock()
-        self._forget_old(now)
+        with self._book:
+            self._forget_old(now)
+            if len(self._recent) < self.requests_per_minute:
+                self._recent.append(now)
+                return 0.0
+            # The window is full. Wait exactly until the oldest request ages
+            # out; any less and this would be the 16th inside the same minute.
+            delay = self._recent[0] + self.window - now
 
-        if len(self._recent) < self.requests_per_minute:
-            self._recent.append(now)
-            return 0.0
-
-        # The window is full. Wait exactly until the oldest request ages out;
-        # any less and this would be the 16th inside the same minute.
-        delay = self._recent[0] + self.window - now
         if delay > 0:
             if self.on_wait:
                 # Say so before sleeping, not after: the point is to explain
@@ -98,11 +108,14 @@ class RateLimiter:
                     self.on_wait(delay, self.requests_per_minute)
                 except Exception:
                     pass
+            # Deliberately outside self._book: holding it here would make
+            # every headroom question in the pool block behind this sleep.
             self._sleep(delay)
             now = self._clock()
-            self._forget_old(now)
         else:
             delay = 0.0
 
-        self._recent.append(now)
+        with self._book:
+            self._forget_old(now)
+            self._recent.append(now)
         return delay

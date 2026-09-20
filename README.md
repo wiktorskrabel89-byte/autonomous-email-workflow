@@ -132,8 +132,23 @@ email-workflow demo
 | Thing | Where to get it | Free? |
 |---|---|---|
 | An AI API key | [Google AI Studio](https://aistudio.google.com/apikey) for Gemini, or OpenAI / Groq / OpenRouter | yes, on the free tier |
-| A Gmail app password | [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) - **not** your normal password | yes |
+| A Gmail app password | [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) - **not** your normal password. Needs 2-Step Verification on first, see below | yes |
 | Discord webhook (optional) | your server's channel settings | yes |
+
+**The app password, in full** - this is where people get stuck:
+
+1. **Turn on 2-Step Verification** at
+   [myaccount.google.com/signinoptions/twosv](https://myaccount.google.com/signinoptions/twosv).
+   Google does not offer app passwords at all until it is on. With it off, the
+   app-password page never mentions 2-Step Verification - it just says the
+   setting is not available for your account, which reads as a broken page.
+2. **Create the password** at
+   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+   Give it any name, then copy the 16 characters and remove the spaces.
+3. **Put it in `.env`** as `GMAIL_APP_PASSWORD`, with your address in
+   `GMAIL_ADDRESS`. Your normal Gmail password will never work here.
+
+`email-workflow setup` walks through all three and opens both pages for you.
 
 Everything is yours: your keys stay in your `.env`, which is gitignored and
 never leaves your machine unless you deliberately schedule a cloud run.
@@ -399,6 +414,37 @@ key, a retired model, a network drop. A malformed request fails everywhere, so i
 is reported immediately instead of being retried four times. The audit log records
 the provider that **actually** answered, not the one named in `config.yaml`.
 
+### "Too many requests" is a pause, not the end
+
+A provider says `429` for two completely different things, and telling them apart
+is what keeps a long run alive:
+
+| What the server means | What happens |
+|---|---|
+| **Not this second** — the per-minute limit is full | The same model is asked again after the wait it asked for. Nothing is retired, nothing switches. |
+| **Not until tomorrow** — the day's free quota is spent | That model is put down for the rest of the run and the chain moves on. |
+
+Reading the first one as the second is what used to end a run halfway through an
+inbox: one busy minute retired the main model, the next minute retired the
+fallback, and the chain fell all the way through to a local model that was not
+even running — `Every AI provider failed`, after 16 of 158 emails.
+
+Two more things follow from that:
+
+- **Everything resting means waiting, not giving up.** If every provider is merely
+  busy, the run waits for the first one back rather than failing.
+- **A provider that cannot work is never announced as the rescue.** The local
+  model is checked before the chain hands over to it, so you no longer read
+  "switching to local ollama and carrying on" one line before the run dies. If
+  Ollama is not running, the message says so.
+
+### A run that cannot finish still reports what it did
+
+If it does run out in the end, the emails already handled are not thrown away.
+You get the report for those, and a line saying how many were left. Those are
+still unread, so the next run picks up exactly where this one stopped — nothing
+is lost and nothing is done twice.
+
 ---
 
 ## Can it run offline?
@@ -566,7 +612,7 @@ app has already dealt with.
 email:
   archive_unimportant: true      # false = unimportant mail is only marked read
   star_important: true           # false = nothing is starred
-  important_label: AI/Important  # the label put next to the star
+  important_label: Important      # the label put next to the star
 ```
 
 If the mailbox refuses an archive, the run tells you instead of quietly claiming it
@@ -593,6 +639,18 @@ Expected failures are explained, not dumped as a Python traceback:
 
 This covers a retired model, a rejected key, a quota wall, a timeout, a reply cut
 off by the token limit, and a provider that cannot return valid JSON.
+
+**"The mail server refused to save the draft (status NO)"** — this was a folder
+name. `[Gmail]/Drafts` is only its **English** name: a Polish account calls it
+`[Gmail]/Wersje robocze`, a German one `[Gmail]/Entwürfe`. The app now asks your
+mailbox which folder is Drafts (IMAP marks it, whatever the language), so this
+should not happen at all. If your server is old enough not to say, put the name
+in `IMAP_DRAFTS_FOLDER` in `.env` — and the error message now lists the folders
+your mailbox actually has, so you can copy the right one.
+
+**"Invalid credentials" on Gmail** — almost always the app password. Your normal
+Gmail password does not work, and Google will not let you create an app password
+until 2-Step Verification is on. See [What you will need](#get-it) above.
 
 ---
 

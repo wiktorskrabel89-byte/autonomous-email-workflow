@@ -1,7 +1,8 @@
 import os
 import re
 import json
-from typing import Optional, Type, TypeVar, List
+import time
+from typing import Callable, Optional, Type, TypeVar, List
 from pydantic import BaseModel, ValidationError
 from openai import (
     OpenAI,
@@ -50,7 +51,9 @@ PROVIDER_METADATA = {
         "env_var": "GEMINI_API_KEY",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "keys_url": "https://aistudio.google.com/apikey",
-        "default_model": "gemini-3.6-flash",
+        # The free tier's workhorse: the cheapest Gemini per request, so the
+        # daily allowance stretches furthest over a full inbox.
+        "default_model": "gemini-3.1-flash-lite",
     },
     "groq": {
         "name": "Groq",
@@ -72,7 +75,47 @@ PROVIDER_METADATA = {
 # connection with no output at all, which reads to the user as a freeze.
 REQUEST_TIMEOUT = 60.0
 
+# A 429 that is only this minute's limit is waited out here, on the same model,
+# rather than being treated as the end of that model. Two tries is enough: a
+# per-minute window is 60 seconds wide, so anything still refused after two
+# waits is not a per-minute problem.
+RATE_LIMIT_RETRIES = 2
+# Never sit on one refusal longer than this, whatever the server asks for. A
+# daily quota can come back with a wait of hours, and that is a failover, not
+# a pause.
+MAX_RATE_LIMIT_WAIT = 90.0
+# When the server refuses without saying how long to wait. Gemini's window is
+# a rolling minute, so this is long enough to clear most of one.
+DEFAULT_RATE_LIMIT_WAIT = 20.0
+
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+# "retryDelay": "17s" / retry in 17.2s / Retry-After: 17
+# Tolerant about what sits between the phrase and the number: the same body
+# arrives as retryDelay: "17s", retryDelay=17s, or - once it has been through
+# a JSON dump - retryDelay: \"17s\".
+_RETRY_DELAY = re.compile(
+    r"(?:retry[_\-]?delay|retry in|try again in)[\s:=\"'\\]*([0-9]+(?:\.[0-9]+)?)\s*s",
+    re.IGNORECASE,
+)
+# Google names the exact allowance that was hit, e.g.
+# "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" or "...PerDay...".
+_PER_MINUTE = re.compile(r"per[\s_\-]?minute|requests?[\s_\-]?per[\s_\-]?min|\brpm\b", re.IGNORECASE)
+_PER_DAY = re.compile(r"per[\s_\-]?day|daily|\brpd\b|per[\s_\-]?month", re.IGNORECASE)
+# A 429 that will never clear on its own: the allowance is used up or there is
+# no billing behind it. OpenAI's is the important one - "insufficient_quota"
+# mentions neither a minute nor a day, so without this it would read as a busy
+# minute and be waited out over and over, while telling the user "nothing is
+# broken" about something only a payment method can fix.
+_SPENT_FOR_GOOD = re.compile(
+    r"insufficient[_\s\-]?quota"
+    r"|check your plan and billing"
+    r"|billing details"
+    r"|exceeded your (?:current )?quota.*billing"
+    r"|out of credits?"
+    r"|credit balance",
+    re.IGNORECASE,
+)
 
 
 def _extract_json(content: str) -> str:
@@ -99,6 +142,36 @@ def _extract_json(content: str) -> str:
     return text
 
 
+def _describe_error(e: Exception) -> str:
+    """Everything the provider said about a failure, as one searchable string.
+
+    A 429 says which allowance ran out and how long to wait, but it says it in
+    a different place for every provider: in the message, in the JSON body, or
+    in a header. Reading a 429 wrongly is expensive in both directions - waiting
+    out a quota that is spent for the day wastes a run, and retiring a model
+    over this minute's limit ends one - so all of it is looked at.
+    """
+    parts = [str(getattr(e, "message", "") or ""), str(e)]
+    body = getattr(e, "body", None)
+    # The provider's own sentence, before json.dumps escapes the quotes in it.
+    if isinstance(body, dict):
+        error = body.get("error", body)
+        if isinstance(error, dict) and error.get("message"):
+            parts.append(str(error["message"]))
+    if body is not None:
+        try:
+            parts.append(json.dumps(body, default=str))
+        except Exception:
+            parts.append(str(body))
+    response = getattr(e, "response", None)
+    if response is not None:
+        try:
+            parts.append(json.dumps(dict(response.headers), default=str))
+        except Exception:
+            pass
+    return " ".join(part for part in parts if part)
+
+
 class OpenAICompatibleProvider(AIProvider):
     def __init__(self, provider_id: str, config: APIConfig):
         self.provider_id = provider_id.lower()
@@ -111,6 +184,11 @@ class OpenAICompatibleProvider(AIProvider):
         self._supports_json_mode = True
         self.usage = UsageTracker()
         self.limiter = RateLimiter(getattr(config, "requests_per_minute", 0))
+        # Called before waiting out a refusal the server sent us, so the pause
+        # is explained while it happens instead of looking like a freeze.
+        self.on_server_pause: Optional[Callable[[float, str], None]] = None
+        # Swappable so a test can prove the waiting without sitting through it.
+        self.sleep: Callable[[float], None] = time.sleep
 
     def describe(self) -> tuple:
         return (self.provider_id, self.config.model)
@@ -161,6 +239,46 @@ class OpenAICompatibleProvider(AIProvider):
         message = getattr(e, "message", "")
         return str(message or e).strip()
 
+    @staticmethod
+    def _retry_after_seconds(e: Exception) -> float:
+        """How long the server asked us to wait, in seconds. 0 if it did not.
+
+        Google puts it in the error body ("retryDelay": "17s"), most other
+        providers in a Retry-After header. Honouring it is the difference
+        between one short pause and a stream of refusals.
+        """
+        response = getattr(e, "response", None)
+        headers = getattr(response, "headers", None) or {}
+        for name in ("retry-after", "Retry-After", "x-ratelimit-reset-requests"):
+            raw = headers.get(name) if hasattr(headers, "get") else None
+            if raw:
+                match = re.match(r"\s*([0-9]+(?:\.[0-9]+)?)", str(raw))
+                if match:
+                    return float(match.group(1))
+
+        found = _RETRY_DELAY.search(_describe_error(e))
+        return float(found.group(1)) if found else 0.0
+
+    @classmethod
+    def _is_per_minute_limit(cls, e: Exception) -> bool:
+        """Whether a 429 is this minute's limit rather than a spent allowance.
+
+        Final, and moved on from at once: a per-DAY allowance, and a refusal
+        that names billing or an empty balance - OpenAI's "insufficient_quota"
+        says neither "minute" nor "day", and waiting that one out would be
+        waiting for a payment method to appear by itself.
+
+        Everything else is given the benefit of the doubt and waited out,
+        because retiring a model that would have worked again in 17 seconds is
+        what used to end a run halfway through the inbox.
+        """
+        text = _describe_error(e)
+        if _SPENT_FOR_GOOD.search(text):
+            return False
+        if _PER_DAY.search(text) and not _PER_MINUTE.search(text):
+            return False
+        return True
+
     def _translate(self, e: Exception) -> AIProviderError:
         """Turn a provider exception into something a human can act on."""
         model = self.config.model
@@ -190,11 +308,38 @@ class OpenAICompatibleProvider(AIProvider):
                 kind="no_access",
             )
         if isinstance(e, RateLimitError):
+            wait = self._retry_after_seconds(e)
+            if self._is_per_minute_limit(e):
+                return AIProviderError(
+                    f"{self.provider_name} is refusing requests for a moment: "
+                    f"the per-minute limit for '{model}' is full.",
+                    hint="It clears by itself within a minute. Nothing is broken "
+                    "and nothing is lost.",
+                    kind="rate_limit",
+                    retry_after=wait,
+                )
+            detail = self._provider_message(e)
+            for_good = bool(_SPENT_FOR_GOOD.search(_describe_error(e)))
             return AIProviderError(
-                f"{self.provider_name} rate limit or free-tier quota reached for '{model}'.",
-                hint="Wait a minute and run it again, or switch to a smaller model "
-                "in config.yaml. Free tiers usually reset within a minute or a day.",
+                (
+                    f"{self.provider_name} has no quota left for '{model}'."
+                    if for_good
+                    else f"{self.provider_name} has no free quota left today "
+                    f"for '{model}'."
+                )
+                + (f"\n\n{self.provider_name} says: {detail}" if detail else ""),
+                hint=(
+                    "Waiting will not fix this one - the allowance is used up, "
+                    "or the account needs a payment method. Use a key from "
+                    "another account, or put a different model in config.yaml "
+                    "under ai.api.model."
+                    if for_good
+                    else "A daily free allowance resets the next day. Add "
+                    "another key from a second account, or put a different "
+                    "model in config.yaml under ai.api.model."
+                ),
                 kind="quota",
+                retry_after=wait,
             )
         if isinstance(e, (APITimeoutError, APIConnectionError)):
             return AIProviderError(
@@ -212,15 +357,44 @@ class OpenAICompatibleProvider(AIProvider):
         return AIProviderError(f"{self.provider_name} request failed: {e}")
 
     def _send(self, client: OpenAI, kwargs: dict):
-        # Space requests out before sending, not after being refused.
-        self.limiter.wait()
         """One raw request, so rate-limit headers can be read off the response.
 
         Groq and OpenAI report what is left in x-ratelimit-* headers. Gemini
         sends none, which is why usage is also counted locally.
         """
+        # Space requests out before sending, not after being refused.
+        self.limiter.wait()
         raw = client.chat.completions.with_raw_response.create(**kwargs)
         return raw.parse(), dict(raw.headers)
+
+    def _attempt(self, client: OpenAI, kwargs: dict):
+        """One request, JSON mode dropped if the model cannot do it.
+
+        Always raises AIProviderError, never a provider exception: the caller
+        decides what to do from the kind, and every refusal is recorded.
+        """
+        try:
+            return self._send(client, kwargs)
+        except BadRequestError as e:
+            # Not every model on every provider supports response_format.
+            # Fall back once rather than failing the whole run.
+            if self._supports_json_mode and "response_format" in str(e).lower():
+                self._supports_json_mode = False
+                kwargs.pop("response_format", None)
+                try:
+                    return self._send(client, kwargs)
+                except Exception as inner:
+                    failure = self._translate(inner)
+                    self._record(status="error", kind=failure.kind)
+                    raise failure from None
+            failure = self._translate(e)
+            self._record(status="error", kind=failure.kind)
+            raise failure from None
+        except Exception as e:
+            failure = self._translate(e)
+            # A quota refusal is the single most useful thing to have on record.
+            self._record(status="error", kind=failure.kind)
+            raise failure from None
 
     def _record(self, response=None, headers=None, status="ok", kind="") -> None:
         """Bookkeeping for the usage report. Never raises."""
@@ -255,29 +429,28 @@ class OpenAICompatibleProvider(AIProvider):
             kwargs["response_format"] = {"type": "json_object"}
 
         headers = None
-        try:
-            response, headers = self._send(client, kwargs)
-        except BadRequestError as e:
-            # Not every model on every provider supports response_format.
-            # Fall back once rather than failing the whole run.
-            if self._supports_json_mode and "response_format" in str(e).lower():
-                self._supports_json_mode = False
-                kwargs.pop("response_format", None)
-                try:
-                    response, headers = self._send(client, kwargs)
-                except Exception as inner:
-                    failure = self._translate(inner)
-                    self._record(status="error", kind=failure.kind)
-                    raise failure from None
-            else:
-                failure = self._translate(e)
-                self._record(status="error", kind=failure.kind)
-                raise failure from None
-        except Exception as e:
-            failure = self._translate(e)
-            # A quota refusal is the single most useful thing to have on record.
-            self._record(status="error", kind=failure.kind)
-            raise failure from None
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                response, headers = self._attempt(client, kwargs)
+                break
+            except AIProviderError as failure:
+                # This minute's limit is not the end of a model. Waiting it out
+                # on the same model is the whole fix: treating it as "this
+                # provider is finished" is what walked the chain down, one
+                # model at a time, to a local Ollama that was not running - and
+                # ended the run halfway through the inbox.
+                if failure.kind != "rate_limit" or attempt == RATE_LIMIT_RETRIES:
+                    raise
+                delay = min(
+                    failure.retry_after or DEFAULT_RATE_LIMIT_WAIT,
+                    MAX_RATE_LIMIT_WAIT,
+                )
+                if self.on_server_pause:
+                    try:
+                        self.on_server_pause(delay, f"{self.provider_name} / {self.config.model}")
+                    except Exception:
+                        pass
+                self.sleep(delay)
 
         self._record(response=response, headers=headers)
 

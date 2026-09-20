@@ -38,9 +38,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -50,12 +50,13 @@ jobs:
       # Without this, every run would see the same unread emails as new and
       # draft a second reply to each of them.
       - name: Restore what previous runs already handled
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             state.json
             idempotency.json
             usage.jsonl
+            audit.jsonl
           key: email-workflow-state-${{ github.run_id }}
           restore-keys: |
             email-workflow-state-
@@ -99,19 +100,28 @@ jobs:
       # The audit log is the record of what was decided and why, kept so a
       # surprising decision can be traced afterwards.
       #
-      # continue-on-error, deliberately: this is a convenience, and it must
-      # never fail the run. A full artifact storage quota - which is easy to
-      # reach on a free account - was turning a run that had already triaged
-      # the inbox perfectly well into a red cross.
+      # ONLY when the run failed. A free account's artifact storage is small,
+      # and a daily upload fills it within weeks - at which point every run
+      # prints "Artifact storage quota has been hit" and the upload fails. The
+      # log itself is not lost: it goes into the cache above with the rest of
+      # the bookkeeping, and this step is only the copy you can download.
+      # So: nothing is uploaded on a good day, and the one run you actually
+      # want to look at still has its log attached.
       #
-      # Seven days rather than thirty, for the same reason: the log is also
-      # written into the cache, so this is only the copy you can download.
-      - name: Keep the audit log
-        if: always()
+      # continue-on-error, still: a convenience must never fail a run that has
+      # already triaged the inbox perfectly well. Three days rather than seven
+      # for the same reason - a failure is looked at now or not at all.
+      #
+      # If the quota is already full, old artifacts have to go before anything
+      # new fits: Actions tab -> the run -> delete its artifacts, or
+      #   gh api -X DELETE repos/OWNER/REPO/actions/artifacts/ID
+      # GitHub recalculates the usage 6-12 hours after they are deleted.
+      - name: Keep the audit log (only if this run failed)
+        if: failure()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: audit-log
           path: audit.jsonl
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: ignore

@@ -1,5 +1,6 @@
 import json
 import imaplib
+import re
 import smtplib
 import email
 import os
@@ -26,6 +27,110 @@ _IMAP_MONTHS = (
 
 def _imap_date(when: datetime) -> str:
     return f"{when.day:02d}-{_IMAP_MONTHS[when.month - 1]}-{when.year}"
+
+
+# One line of an IMAP LIST reply: (flags) "delimiter" name
+_LIST_LINE = re.compile(r'^\((?P<flags>[^)]*)\)\s+(?:"(?P<delim>[^"]*)"|NIL)\s+(?P<name>.+)$')
+
+# Names a Drafts folder goes by when the server does not flag it as one.
+# English first, then the Polish and German ones this ran into, then the plain
+# IMAP layouts. Only ever used as a last resort - the server's own \Drafts flag
+# is the answer on every modern mailbox, whatever language it is in.
+_DRAFT_NAME_GUESSES = (
+    "[Gmail]/Drafts",
+    "[Google Mail]/Drafts",
+    "[Gmail]/Wersje robocze",
+    "[Gmail]/Entw&APw-rfe",
+    "Drafts",
+    "INBOX.Drafts",
+    "INBOX/Drafts",
+)
+
+
+# The one thing people get stuck on, in one place so every message says it.
+# The app-password page does not mention 2-Step Verification at all: with it
+# off, Google simply says the setting is not available for your account, which
+# reads as a broken page rather than as a missing step.
+APP_PASSWORD_HELP = (
+    "Gmail needs an App Password - a 16-character one made just for this app. "
+    "Your normal Gmail password will not work.\n"
+    "  1. Turn on 2-Step Verification: "
+    "https://myaccount.google.com/signinoptions/twosv\n"
+    "     Google does not offer app passwords until it is on, and the page "
+    "below will only say the setting is not available for your account.\n"
+    "  2. Create the password: https://myaccount.google.com/apppasswords\n"
+    "  3. Put it in .env as GMAIL_APP_PASSWORD (spaces removed), with your "
+    "address in GMAIL_ADDRESS.\n"
+    "Or run 'email-workflow setup', which walks through all three."
+)
+
+
+def _looks_like_a_login_refusal(e: Exception) -> bool:
+    """Whether the server turned the credentials down, rather than the network.
+
+    IMAP and SMTP both answer a bad password with prose, not a status code, so
+    the words are all there is to go on.
+    """
+    text = str(e).lower()
+    return any(
+        phrase in text
+        for phrase in (
+            "authenticationfailed",
+            "authentication failed",
+            "invalid credentials",
+            "username and password not accepted",
+            "application-specific password",
+            "auth",
+            "login",
+        )
+    )
+
+
+def _parse_list_line(line) -> Optional[tuple]:
+    """One LIST reply line as (flags, folder name). None if it cannot be read.
+
+    imaplib hands back a tuple when the server sends the folder name as an IMAP
+    literal - `(b'(\\HasNoChildren \\Drafts) "/" {14}', b'Wersje robocze')` -
+    which is exactly the shape a name with non-ASCII characters can arrive in.
+    Treating that as a string would have thrown, and the whole lookup would
+    have fallen back to guessing English names on the one kind of mailbox this
+    was written for.
+    """
+    if isinstance(line, (tuple, list)):
+        line = b"".join(
+            part if isinstance(part, (bytes, bytearray)) else str(part).encode("latin-1")
+            for part in line
+        )
+        # Drop the "{14}" byte-count marker: the bytes it announced are now
+        # joined on right behind it.
+        line = re.sub(rb"\{\d+\}", b"", line, count=1)
+    if isinstance(line, (bytes, bytearray)):
+        # IMAP folder names are modified UTF-7; decoding as latin-1 keeps the
+        # bytes intact so the name can be handed straight back to the server.
+        line = line.decode("latin-1", errors="replace")
+    if not isinstance(line, str):
+        return None
+    match = _LIST_LINE.match(line.strip())
+    if not match:
+        return None
+    flags = [f.lower() for f in match.group("flags").split()]
+    name = match.group("name").strip()
+    if name.startswith('"') and name.endswith('"') and len(name) > 1:
+        name = name[1:-1]
+    return flags, name
+
+
+def _quote_mailbox(name: str) -> str:
+    """A folder name IMAP will accept, quoted exactly once.
+
+    Drafts folders have spaces in them in most languages ("Wersje robocze"),
+    and an unquoted name with a space is a different command to the server -
+    which is why a folder that exists can still come back as "no such folder".
+    """
+    name = (name or "").strip()
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        return name
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _decode_str(header_val: str) -> str:
@@ -134,15 +239,22 @@ class GmailProvider(EmailProvider):
         self.imap_server = os.getenv("IMAP_SERVER", "imap.gmail.com")
         self.smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
         self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
-        self.drafts_folder = os.getenv("IMAP_DRAFTS_FOLDER", '"[Gmail]/Drafts"')
+        # Empty means "ask the server". Only set when the user names one.
+        self.drafts_folder = os.getenv("IMAP_DRAFTS_FOLDER", "").strip()
+        # What the server said its Drafts folder is, once it has been asked.
+        self._found_drafts_folder = ""
+        self._folders_seen: List[str] = []
         # X-GM-LABELS is a Gmail extension; other servers reject it.
         self.supports_gmail_labels = True
         self.last_archive_error = ""
 
     def fetch_unprocessed_emails(self) -> List[EmailMessage]:
         if not self.address or not self.password:
-            raise ValueError(
-                "Gmail credentials missing. Please set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in .env or via setup wizard."
+            raise EmailProviderError(
+                "Gmail credentials missing: GMAIL_ADDRESS and "
+                "GMAIL_APP_PASSWORD are not both set.",
+                hint=APP_PASSWORD_HELP,
+                kind="auth",
             )
 
         max_age_days = max(1, getattr(self.config, "max_age_days", 7))
@@ -218,8 +330,25 @@ class GmailProvider(EmailProvider):
                                 received_at=date_str or time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                             )
                             messages.append(email_obj)
+        except EmailProviderError:
+            raise
         except Exception as e:
-            raise RuntimeError(f"Gmail IMAP connection error: {e}")
+            # A rejected login used to come out as a bare RuntimeError, which
+            # the CLI has no handling for: a traceback, and no word about the
+            # app password that is nearly always the real cause.
+            if _looks_like_a_login_refusal(e):
+                raise EmailProviderError(
+                    f"{self.imap_server} would not accept the login for "
+                    f"{self.address or '(no address set)'}.",
+                    hint=APP_PASSWORD_HELP,
+                    kind="auth",
+                ) from None
+            raise EmailProviderError(
+                f"Could not read the mailbox at {self.imap_server}: {e}",
+                hint="Check your internet connection, then GMAIL_ADDRESS and "
+                "GMAIL_APP_PASSWORD in your .env file.",
+                kind="network",
+            ) from None
 
         return messages
 
@@ -241,7 +370,7 @@ class GmailProvider(EmailProvider):
         if not self.address or not self.password:
             raise EmailProviderError(
                 "Cannot send: the mailbox credentials are missing.",
-                hint="Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in your .env file.",
+                hint=APP_PASSWORD_HELP,
                 kind="auth",
             )
         if not to_address:
@@ -266,20 +395,67 @@ class GmailProvider(EmailProvider):
         except Exception as e:
             raise EmailProviderError(
                 f"Could not send the reply through {self.smtp_server}: {e}",
-                hint="Check GMAIL_ADDRESS and GMAIL_APP_PASSWORD in your .env file. "
-                "Gmail needs an App Password, not your normal password.",
+                hint=APP_PASSWORD_HELP if _looks_like_a_login_refusal(e)
+                else "Check your internet connection and the SMTP settings in "
+                "your .env file.",
                 kind="send_failed",
             )
         return f"sent_gmail_{message_id}"
 
+    def find_drafts_folder(self, mail) -> str:
+        """Ask the server where its Drafts folder is, and remember the answer.
+
+        "[Gmail]/Drafts" is only the English name. A Polish account calls it
+        "[Gmail]/Wersje robocze" and a German one "[Gmail]/Entwurfe", so a
+        hardcoded name makes every draft fail with a bare "status NO" on any
+        mailbox that is not in English.
+
+        The server knows: IMAP LIST marks the folder with the special-use flag
+        \\Drafts whatever it is called. The name guesses below are only for a
+        server old enough not to send those flags.
+        """
+        if self.drafts_folder:
+            return self.drafts_folder
+        if self._found_drafts_folder:
+            return self._found_drafts_folder
+
+        names = []
+        try:
+            status, lines = mail.list()
+            if status == "OK":
+                for line in lines or []:
+                    parsed = _parse_list_line(line)
+                    if not parsed:
+                        continue
+                    flags, name = parsed
+                    names.append(name)
+                    if "\\drafts" in flags:
+                        self._found_drafts_folder = name
+                        self._folders_seen = names
+                        return name
+        except Exception:
+            # Never fail the draft over the lookup itself; fall through to the
+            # guesses and let the APPEND give the real answer.
+            pass
+
+        self._folders_seen = names
+        for guess in _DRAFT_NAME_GUESSES:
+            if guess in names:
+                self._found_drafts_folder = guess
+                return guess
+
+        return _DRAFT_NAME_GUESSES[0]
+
     def create_draft(self, message_id: str, reply_subject: str, reply_body: str,
                      to_address: Optional[str] = None) -> str:
         msg = self._build_reply(message_id, reply_subject, reply_body, to_address)
+        folder = self.drafts_folder or "(not looked up yet)"
         try:
             with imaplib.IMAP4_SSL(self.imap_server) as mail:
                 mail.login(self.address, self.password)
+                folder = self.find_drafts_folder(mail)
                 status, _ = mail.append(
-                    self.drafts_folder,
+                    _quote_mailbox(folder),
                     "\\Draft",
                     imaplib.Time2Internaldate(time.time()),
                     msg.as_bytes(),
@@ -289,10 +465,9 @@ class GmailProvider(EmailProvider):
                 # find is worse than a clear error.
                 if status != "OK":
                     raise EmailProviderError(
-                        f"The mail server refused to save the draft (status {status}).",
-                        hint=f"Check that the folder {self.drafts_folder} exists. "
-                        "On a non-English Gmail the Drafts folder has a different "
-                        "name - set IMAP_DRAFTS_FOLDER in your .env file.",
+                        f"The mail server refused to save the draft in "
+                        f"'{folder}' (status {status}).",
+                        hint=self._drafts_hint(folder),
                         kind="draft_failed",
                     )
         except EmailProviderError:
@@ -300,12 +475,23 @@ class GmailProvider(EmailProvider):
         except Exception as e:
             raise EmailProviderError(
                 f"Could not save the draft to {self.imap_server}: {e}",
-                hint=f"Check your mailbox credentials and that the folder "
-                f"{self.drafts_folder} exists. You can override it with "
-                f"IMAP_DRAFTS_FOLDER in your .env file.",
+                hint="Check your mailbox credentials. " + self._drafts_hint(folder),
                 kind="draft_failed",
             )
         return f"draft_gmail_{message_id}"
+
+    def _drafts_hint(self, folder: str) -> str:
+        """What to do about a Drafts folder that would not take the message."""
+        hint = (
+            f"'{folder}' is the folder that was tried. Your mailbox normally "
+            f"tells the app which folder is Drafts, whatever language it is in; "
+            f"if yours does not, put the right name in IMAP_DRAFTS_FOLDER in "
+            f"your .env file."
+        )
+        if self._folders_seen:
+            shown = ", ".join(self._folders_seen[:12])
+            hint += f"\n\nFolders your mailbox has: {shown}"
+        return hint
 
     def archive_email(self, message_id: str) -> None:
         """Really archive it: mark read AND take it out of the inbox.

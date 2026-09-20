@@ -283,6 +283,9 @@ def build_team(tmp_path, review):
 
     config = AppConfig()
     config.email.allow_send = True
+    # Drafts ship off. This scenario is about a reply being HELD as a draft
+    # when the second key objects, so it has to be on.
+    config.email.create_drafts = True
     # The send gate only lets a trusted category out. Work mail is what this
     # scenario is about, so it is trusted here.
     config.automation.trusted_categories = ["work"]

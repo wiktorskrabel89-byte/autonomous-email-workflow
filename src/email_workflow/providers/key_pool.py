@@ -21,8 +21,10 @@ allowance belongs to the key, so two threads sharing a key must still take
 turns. Threads on *different* keys never wait for each other.
 """
 
+import math
 import os
 import threading
+import time
 from typing import Callable, List, Optional, Tuple
 
 from email_workflow.core.errors import AIProviderError
@@ -37,6 +39,18 @@ from email_workflow.models.email import EmailMessage
 from email_workflow.models.state import ThreadState
 from email_workflow.providers.base_ai import AIProvider
 from email_workflow.providers.fallback_ai import ProviderLink
+
+
+# The longest the pool will wait for a resting key before giving up on the
+# request. A per-minute window is 60 seconds wide, so this covers one full
+# window plus the time it takes to notice. Deliberately under the chain's own
+# budget: when this pool sits inside a fallback chain, the chain measures wall
+# clock, so time spent waiting here is time the chain no longer has.
+MAX_KEY_WAIT = 120.0
+
+# Pauses in a row before a key is taken as finished rather than busy. Reset
+# whenever it answers, so a genuinely busy key is never retired for being busy.
+MAX_TRANSIENT_STRIKES = 3
 
 
 def _sort_key(name: str) -> Tuple[int, str]:
@@ -87,13 +101,49 @@ def discover_key_envs(
 class KeyLane:
     """One API key: a provider bound to it, and that key's own allowance."""
 
-    def __init__(self, link: ProviderLink, key_env: str):
+    def __init__(self, link: ProviderLink, key_env: str, clock=time.monotonic):
         self.link = link
         self.key_env = key_env
-        self.exhausted = False
+        # When this key may be used again. 0 = now, inf = not again this run.
+        # A key that hit this minute's limit is resting, not spent: retiring it
+        # for the whole run over a pause that clears in seconds threw away an
+        # account's whole allowance, and with one key it ended the run.
+        self.resume_at = 0.0
+        # Pauses in a row with no answer in between.
+        self.strikes = 0
+        self._clock = clock
         # Held for the whole of this lane's rate-limit wait. Two callers on one
         # key have to take turns; callers on other keys are unaffected.
         self.gate = threading.Lock()
+
+    @property
+    def exhausted(self) -> bool:
+        """Kept as a name because it reads well; it means "not usable now"."""
+        return self.resume_at > self._clock()
+
+    def stand_down(self, error) -> None:
+        if not getattr(error, "is_transient", False):
+            self.resume_at = math.inf
+            return
+        # A key that has not answered once between its pauses is not busy.
+        # Waiting for it again on every email would cost the rest of the run.
+        self.strikes += 1
+        self.resume_at = (
+            math.inf
+            if self.strikes >= MAX_TRANSIENT_STRIKES
+            else self._clock() + error.cooldown_seconds
+        )
+
+    def answered(self) -> None:
+        """It worked, so its pauses were real pauses."""
+        self.strikes = 0
+
+    def waiting_for(self) -> Optional[float]:
+        """Seconds until this key is usable again, if it is coming back."""
+        if self.resume_at == math.inf:
+            return None
+        left = self.resume_at - self._clock()
+        return left if left > 0 else None
 
     @property
     def limiter(self):
@@ -117,11 +167,17 @@ class KeyPoolProvider(AIProvider):
         self,
         lanes: List[KeyLane],
         on_switch: Optional[Callable] = None,
+        on_pause: Optional[Callable[[float, str], None]] = None,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         if not lanes:
             raise ValueError("KeyPoolProvider needs at least one key.")
         self.lanes = lanes
         self.on_switch = on_switch
+        # Said out loud before waiting for a resting key, so the pause is
+        # explained while it happens.
+        self.on_pause = on_pause
+        self._sleep = sleep
         self._cursor = 0
         self._lock = threading.Lock()
         self._last_used = lanes[0]
@@ -137,7 +193,9 @@ class KeyPoolProvider(AIProvider):
         return [lane for lane in self.lanes if not lane.exhausted]
 
     def describe(self) -> tuple:
-        return self._last_used.link.provider.describe()
+        with self._lock:
+            lane = self._last_used
+        return lane.link.provider.describe()
 
     def describe_pool(self) -> str:
         return "  +  ".join(str(lane) for lane in self.lanes)
@@ -179,9 +237,13 @@ class KeyPoolProvider(AIProvider):
             return live[best]
 
     def _retire(self, lane: KeyLane, error: AIProviderError) -> Optional[KeyLane]:
-        """Mark a key as spent and name its replacement, for the message."""
+        """Stand a key down and name its replacement, for the message.
+
+        Down for a moment if the server only asked for a pause, down for the
+        run if the key is rejected or its day's allowance is spent.
+        """
         with self._lock:
-            lane.exhausted = True
+            lane.stand_down(error)
             replacement = next((other for other in self.lanes if not other.exhausted), None)
         if replacement is not None and self.on_switch:
             try:
@@ -190,27 +252,51 @@ class KeyPoolProvider(AIProvider):
                 pass
         return replacement
 
+    def _soonest_return(self) -> Optional[float]:
+        """Seconds until the first resting key is usable again."""
+        with self._lock:
+            waits = [w for w in (lane.waiting_for() for lane in self.lanes) if w]
+        return min(waits) if waits else None
+
     def _run(self, method_name: str, *args, avoid_last: bool = False, **kwargs):
         last_error: Optional[AIProviderError] = None
+        waited = 0.0
 
         while True:
-            lane = self._claim(avoid=self._last_used if avoid_last else None)
+            with self._lock:
+                avoid = self._last_used if avoid_last else None
+            lane = self._claim(avoid=avoid)
             if lane is None:
-                break
+                # Every key is resting rather than spent: wait for the first
+                # one back. With a single key this is the whole difference
+                # between a run that pauses and a run that stops.
+                pause = self._soonest_return()
+                if pause is None or waited + pause > MAX_KEY_WAIT:
+                    break
+                pause = max(pause, 1.0)
+                if self.on_pause:
+                    try:
+                        self.on_pause(pause, self.describe_pool())
+                    except Exception:
+                        pass
+                self._sleep(pause)
+                waited += pause
+                continue
 
             try:
                 # The gate covers this key's rate-limit wait and its request.
                 # Other keys are free to work the whole time.
                 with lane.gate:
                     result = getattr(lane.link.provider, method_name)(*args, **kwargs)
-                self._last_used = lane
+                with self._lock:
+                    self._last_used = lane
+                    lane.answered()
                 return result
             except AIProviderError as e:
                 last_error = e
                 if not e.can_failover:
                     raise
-                if self._retire(lane, e) is None:
-                    break
+                self._retire(lane, e)
 
         tried = self.describe_pool()
         raise AIProviderError(
@@ -265,6 +351,15 @@ class KeyPoolProvider(AIProvider):
             "review_reply", message, reply, thread, known_facts, avoid_last=True
         )
 
+    # These two sat below find_pool, indented, so they belonged to that
+    # function and not to this class - which quietly left the pool with the
+    # base class's dumb "just append it" version of both. With two keys or
+    # more, adding a fact stopped being folded in by the AI at all.
+    def organise_facts(self, existing: str, addition: str) -> KnownFactsMerge:
+        return self._run("organise_facts", existing, addition)
+
+    def suggest_facts(self, emails: str, existing: str = "") -> KnownFactsMerge:
+        return self._run("suggest_facts", emails, existing)
 
 
 def all_limiters(provider) -> List:
@@ -301,8 +396,16 @@ def find_pool(provider) -> Optional["KeyPoolProvider"]:
             return found
     return None
 
-    def organise_facts(self, existing: str, addition: str) -> KnownFactsMerge:
-        return self._run("organise_facts", existing, addition)
 
-    def suggest_facts(self, emails: str, existing: str = "") -> KnownFactsMerge:
-        return self._run("suggest_facts", emails, existing)
+def leaf_providers(provider) -> List:
+    """Every provider that really talks to an API behind a pool or a chain."""
+    lanes = getattr(provider, "lanes", None)
+    if lanes:
+        return [lane.link.provider for lane in lanes]
+    links = getattr(provider, "links", None)
+    if links:
+        found = []
+        for link in links:
+            found.extend(leaf_providers(link.provider))
+        return found
+    return [provider]

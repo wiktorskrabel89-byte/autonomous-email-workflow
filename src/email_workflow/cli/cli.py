@@ -29,7 +29,11 @@ from email_workflow.models.analysis import EmailAnalysis
 from email_workflow.providers.ai_factory import get_ai_provider
 from email_workflow.providers.key_pool import find_pool, parallel_lanes
 from email_workflow.providers.fake_ai import FakeAIProvider
-from email_workflow.providers.email_provider import get_email_provider, MockEmailProvider
+from email_workflow.providers.email_provider import (
+    APP_PASSWORD_HELP,
+    get_email_provider,
+    MockEmailProvider,
+)
 from email_workflow.providers.api_providers import PROVIDER_METADATA, OpenAICompatibleProvider
 from email_workflow.providers.fallback_ai import FallbackAIProvider
 from email_workflow.providers.ai_factory import build_provider_chain
@@ -470,12 +474,12 @@ def setup():
         config.ai.mode = AIMode.API
         console.print("\n[bold yellow]Select API Provider:[/bold yellow]")
         console.print("1. OpenAI (ChatGPT models, e.g. gpt-4o-mini)")
-        console.print("2. Google Gemini (e.g. gemini-3-flash-preview)")
+        console.print("2. Google Gemini (e.g. gemini-3.1-flash-lite)")
         console.print("3. Groq (e.g. llama-3.3-70b-versatile)")
         console.print("4. OpenRouter (e.g. anthropic/claude-3.5-sonnet)")
 
         prov_map = {"1": ("openai", "gpt-4o-mini", "OPENAI_API_KEY"),
-                    "2": ("gemini", "gemini-3-flash-preview", "GEMINI_API_KEY"),
+                    "2": ("gemini", "gemini-3.1-flash-lite", "GEMINI_API_KEY"),
                     "3": ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
                     "4": ("openrouter", "anthropic/claude-3.5-sonnet", "OPENROUTER_API_KEY")}
 
@@ -512,6 +516,10 @@ def setup():
         import webbrowser
         config.email.provider = "gmail"
         app_pwd_url = "https://myaccount.google.com/apppasswords"
+        # An app password cannot be created at all until this is on, and the
+        # app-password page does not tell you that - it just says the setting
+        # is not available for your account.
+        two_step_url = "https://myaccount.google.com/signinoptions/twosv"
         console.print("\n[bold cyan]--- Real Gmail Setup ---[/bold cyan]")
 
         g_email = Prompt.ask("Gmail Address", default=os.getenv("GMAIL_ADDRESS", config.email.account_ref))
@@ -532,16 +540,38 @@ def setup():
 
         if not g_pwd:
             console.print(
-                f"\n[bold white]Step 1:[/bold white] Generate a Gmail App Password at:\n"
+                f"\n[bold white]Step 1: turn on 2-Step Verification "
+                f"first.[/bold white]\n"
+                f"  [bold cyan][link={two_step_url}]{two_step_url}[/link][/bold cyan]\n\n"
+                f"[dim]Google only offers app passwords on accounts that have "
+                f"2-Step Verification switched on. Without it the app-password "
+                f"page does not say why - it just tells you the setting is not "
+                f"available for your account, which looks like the page is "
+                f"broken. If yours is already on, skip this step.[/dim]\n"
+            )
+            if Confirm.ask("Open the 2-Step Verification page?", default=True):
+                webbrowser.open(two_step_url)
+                console.print(
+                    "[dim]Turn it on there (phone or authenticator app), then "
+                    "come back here.[/dim]"
+                )
+                Prompt.ask("Press Enter once 2-Step Verification is on", default="")
+
+            console.print(
+                f"\n[bold white]Step 2:[/bold white] Generate a Gmail App Password at:\n"
                 f"  [bold cyan][link={app_pwd_url}]{app_pwd_url}[/link][/bold cyan]\n"
             )
             console.print("[dim](Opening the link in your browser now...)[/dim]")
             webbrowser.open(app_pwd_url)
             console.print(
-                "\n[bold white]Step 2:[/bold white] On that page:\n"
+                "\n[bold white]Step 3:[/bold white] On that page:\n"
                 "  1. Type an app name (e.g. [bold]Email Workflow[/bold])\n"
                 "  2. Click [bold]Create[/bold]\n"
-                "  3. Copy the [bold]16-character password[/bold] shown (remove spaces)\n"
+                "  3. Copy the [bold]16-character password[/bold] shown (remove spaces)\n\n"
+                "[dim]If that page says the setting is not available for your "
+                "account, 2-Step Verification is still off - go back to Step 1. "
+                "This is not your normal Gmail password, and your normal "
+                "password will not work here.[/dim]\n"
             )
             g_pwd = Prompt.ask("Gmail App Password (16 chars, visible so you can type/paste it)")
 
@@ -667,37 +697,47 @@ def test_report(
     dummy_msg = EmailMessage(
         message_id="msg_test_report",
         thread_id="thread_test_report",
-        sender=SenderInfo(name="Billing Fraud Dept", email="alert@fake-finance.com"),
-        subject="[URGENT REPORT TEST] Disputed Wire Transfer #9842",
-        body="This is a test notification report generated by email-workflow.",
-        received_at="2026-09-18T16:00:00Z",
+        sender=SenderInfo(name="Test Sender", email="test@example.com"),
+        subject="[TEST] This is a test report",
+        body=(
+            "This is a test message from email-workflow. Nothing here is real: "
+            "no such email arrived and nothing was done to your mailbox.\n\n"
+            "It is here so you can check that reports reach you."
+        ),
+        received_at="2026-09-19T16:00:00Z",
     )
 
+    # Deliberately dull. It used to invent a disputed wire transfer from a
+    # "Billing Fraud Dept", which reads as a real fraud alert at a glance -
+    # a test that frightens the person testing is a bad test.
     dummy_analysis = EmailAnalysis(
         message_id="msg_test_report",
         thread_id="thread_test_report",
         sender=dummy_msg.sender,
         subject=dummy_msg.subject,
         received_at=dummy_msg.received_at,
-        category=EmailCategory.FINANCIAL,
-        importance=ImportanceLevel.HIGH,
-        urgency=ImportanceLevel.HIGH,
-        action_required=True,
+        category=EmailCategory.OTHER,
+        importance=ImportanceLevel.LOW,
+        urgency=ImportanceLevel.LOW,
+        action_required=False,
         response_required=True,
         safe_to_automate=False,
         confidence=0.95,
-        missing_information=["Approved wire authorization code"],
-        commitments_implied=["Financial transfer confirmation"],
-        recommended_decision=DecisionOption.ESCALATE,
-        reasoning="Test financial transaction dispute requiring manual review.",
+        missing_information=[],
+        commitments_implied=[],
+        recommended_decision=DecisionOption.CREATE_DRAFT,
+        reasoning="A test report. No real email was read and nothing was sent.",
     )
 
     results = dispatcher.notify(
         message=dummy_msg,
         analysis=dummy_analysis,
-        decision=DecisionOption.ESCALATE,
-        draft_id=None,
-        reply_text="[Sample AI Draft Reply]\nDear Billing Dept,\n\nWe have received your alert regarding transfer #9842. This transaction has been placed on hold pending executive authorization.\n\nBest regards,\nUser",
+        decision=DecisionOption.CREATE_DRAFT,
+        draft_id="draft_test_report",
+        reply_text=(
+            "Hi,\n\nThanks for the message - this is what a reply written by "
+            "the AI looks like in your report.\n\nBest regards,\nYour name"
+        ),
     )
 
     console.print("\n[bold cyan]Report Delivery Results:[/bold cyan]")
@@ -779,25 +819,48 @@ def _print_workflow_error(e: WorkflowError) -> None:
 
 def _announce_throttle(seconds: float, requests_per_minute: int) -> None:
     """Explain the pause while it happens, so it does not look like a freeze."""
-    wait = int(seconds) + 1 if seconds % 1 else int(seconds)
-    if wait >= 60:
-        how_long = f"about a minute"
-    elif wait >= 10:
-        how_long = f"{wait} seconds"
-    else:
-        how_long = f"{wait} second" + ("s" if wait != 1 else "")
-
     console.print(
         f"[yellow]Hit the free limit of {requests_per_minute} requests per minute. "
-        f"Waiting {how_long}, then carrying on by itself - nothing is broken, "
-        f"you do not have to do anything.[/yellow]"
+        f"Waiting {_how_long(seconds)}, then carrying on by itself - nothing is "
+        f"broken, you do not have to do anything.[/yellow]"
+    )
+
+
+def _how_long(seconds: float) -> str:
+    wait = int(seconds) + 1 if seconds % 1 else int(seconds)
+    if wait >= 60:
+        return "about a minute" if wait < 90 else f"{round(wait / 60)} minutes"
+    if wait >= 10:
+        return f"{wait} seconds"
+    return f"{wait} second" + ("s" if wait != 1 else "")
+
+
+def _announce_pause(seconds: float, who: str) -> None:
+    """A wait the server asked for, explained while it happens.
+
+    Different from the throttle message above: that one is us spacing requests
+    out, this one is the provider saying "not right now". It is a pause, not a
+    failure - saying so is what stops it reading as the app giving up.
+    """
+    console.print(
+        f"[yellow]Waiting {_how_long(seconds)} - {who} asked for a short break. "
+        f"It carries on by itself; nothing is broken and nothing is "
+        f"lost.[/yellow]"
     )
 
 
 def _announce_switch(from_link, to_link, error) -> None:
     """Tell the user, mid-run, that the chain moved to another provider."""
+    why = {
+        "rate_limit": "busy right now",
+        "quota": "out of free quota",
+        "auth": "key rejected",
+        "model_gone": "model no longer served",
+        "no_access": "key not allowed to use it",
+        "network": "could not be reached",
+    }.get(error.kind, error.kind)
     console.print(
-        f"[yellow]{from_link} stopped working ({error.kind}). "
+        f"[yellow]{from_link} stopped working ({why}). "
         f"Switching to {to_link} and carrying on.[/yellow]"
     )
 
@@ -844,9 +907,16 @@ def _progress(unit_note=""):
     )
 
 
-def _process_one_at_a_time(pipeline, emails, provider_name, model_name) -> list:
+def _process_one_at_a_time(pipeline, emails, provider_name, model_name):
+    """Returns (results, what stopped it early or None).
+
+    The error is handed back rather than thrown: the emails already worked on
+    are real work, and losing the digest for them because the twentieth one
+    could not be classified is the bug this run kept hitting.
+    """
     results = []
     total = len(emails)
+    stopped = None
     with _progress(f"[dim]{provider_name} / {model_name}[/dim]") as bar:
         job = bar.add_task("starting...", total=total)
         for idx, email in enumerate(emails, 1):
@@ -854,15 +924,19 @@ def _process_one_at_a_time(pipeline, emails, provider_name, model_name) -> list:
             # something moving, the app looks frozen - and it is not obvious
             # when it has moved on to the next email either.
             bar.update(job, description=f'"{_short(email.subject, 40)}"')
-            res = pipeline.process_email(email)
+            try:
+                res = pipeline.process_email(email)
+            except WorkflowError as e:
+                stopped = e
+                break
             results.append(res)
             bar.advance(job)
             render_stage_result(idx, res)
-        bar.update(job, description="done")
-    return results
+        bar.update(job, description="stopped" if stopped else "done")
+    return results, stopped
 
 
-def _process_together(pipeline, emails, workers: int) -> list:
+def _process_together(pipeline, emails, workers: int):
     """Several emails at once, one API key each.
 
     Each result is shown the moment it lands rather than in inbox order. With
@@ -872,6 +946,7 @@ def _process_together(pipeline, emails, workers: int) -> list:
     """
     total = len(emails)
     results = [None] * total
+    stopped = None
 
     with _progress(f"[dim]{workers} keys[/dim]") as bar:
         job = bar.add_task(f"{min(workers, total)} at a time", total=total)
@@ -882,18 +957,29 @@ def _process_together(pipeline, emails, workers: int) -> list:
             }
             for job_done in as_completed(jobs):
                 index = jobs[job_done]
-                results[index] = job_done.result()
+                try:
+                    results[index] = job_done.result()
+                except WorkflowError as e:
+                    # One email that could not be worked on must not throw
+                    # away the ones that were. The others in flight are left
+                    # to finish - they may well succeed on another key.
+                    stopped = stopped or e
+                    bar.advance(job)
+                    continue
                 bar.advance(job)
                 left = total - int(bar.tasks[0].completed)
                 bar.update(job, description=f"{min(workers, left)} at a time"
                            if left else "done")
                 render_stage_result(index + 1, results[index])
 
-    return results
+    return [res for res in results if res is not None], stopped
 
 
-def _process_inbox(pipeline, email_provider, config) -> list:
-    """One full pass over the inbox: fetch, process each email, send the digest."""
+def _process_inbox(pipeline, email_provider, config):
+    """One full pass over the inbox: fetch, process each email, send the digest.
+
+    Returns (results, what stopped it early or None).
+    """
     # Say out loud what is and is not being looked at. "It only found 2" is
     # confusing until you know it never reads mail you have already opened.
     days = getattr(config.email, "max_age_days", 7)
@@ -907,7 +993,7 @@ def _process_inbox(pipeline, email_provider, config) -> list:
             f"[dim]Nothing to do - no {scope}.\n"
             f"Anything you have already opened is left alone on purpose.[/dim]"
         )
-        return []
+        return [], None
 
     provider_name, model_name = pipeline.ai.describe()
     console.print(
@@ -928,10 +1014,28 @@ def _process_inbox(pipeline, email_provider, config) -> list:
         console.print(
             f"[bold cyan]{workers} API keys - {workers} emails at a time.[/bold cyan]\n"
         )
-        results = _process_together(pipeline, emails, workers)
+        results, stopped = _process_together(pipeline, emails, workers)
     else:
-        results = _process_one_at_a_time(
+        results, stopped = _process_one_at_a_time(
             pipeline, emails, provider_name, model_name
+        )
+
+    # A run that cannot go on still says what it did get done, and still sends
+    # the report. It used to die here with the whole pass thrown away, which is
+    # what "it randomly stops working" looked like from the outside.
+    if stopped is not None:
+        done, left = len(results), len(emails) - len(results)
+        _print_workflow_error(stopped)
+        console.print(
+            Panel(
+                f"[bold yellow]Stopped after {done} of {len(emails)}.[/bold yellow]\n\n"
+                f"{left} email" + ("s were" if left != 1 else " was") + " not looked at. "
+                f"They are still unread, so the next run picks up exactly where "
+                f"this one stopped - nothing is lost and nothing is done twice.\n\n"
+                f"[dim]The report below covers the {done} that were "
+                f"finished.[/dim]",
+                border_style="yellow",
+            )
         )
 
     # Archiving and starring are deliberately non-fatal, but they were also
@@ -954,7 +1058,7 @@ def _process_inbox(pipeline, email_provider, config) -> list:
     pipeline.notifier.send_run_digest(
         results, provider_name=provider_name, model_name=model_name
     )
-    return results
+    return results, stopped
 
 
 @app.command()
@@ -1000,7 +1104,10 @@ def run(
 
     try:
         ai_provider = get_ai_provider(
-            config, on_switch=_announce_switch, on_throttle=_announce_throttle
+            config,
+            on_switch=_announce_switch,
+            on_throttle=_announce_throttle,
+            on_pause=_announce_pause,
         )
     except ValueError as e:
         console.print(Panel(f"[bold red]{e}[/bold red]", title="Cannot start", border_style="red"))
@@ -1080,7 +1187,12 @@ def run(
                 return
 
         else:
-            _process_inbox(pipeline, email_provider, config)
+            _, stopped = _process_inbox(pipeline, email_provider, config)
+            if stopped is not None:
+                # The report has already gone out with what was finished. The
+                # non-zero exit is for whatever ran this - a scheduled run that
+                # only got halfway is not a green run.
+                raise typer.Exit(code=1)
             console.print("\n[bold green][OK] Processing complete.[/bold green]")
             _notice_if_out_of_date(config, resolve_project_file("config.yaml").parent)
 
@@ -1162,11 +1274,19 @@ def models(
     )
     table.add_column("Model id", style="white")
     table.add_column("", style="bold green")
+    # Google lists its models as "models/gemini-3.1-flash-lite" while config.yaml
+    # names them without the prefix, which is also how the API wants them sent.
+    # Comparing the two strings as they come made the app announce that a model
+    # it was happily using was not available - a false alarm that sends you off
+    # changing a setting that was never wrong.
+    def _same_model(listed: str) -> bool:
+        return current and listed.split("/")[-1] == current.split("/")[-1]
+
     for model_id in available:
-        table.add_row(model_id, "<- in your config" if model_id == current else "")
+        table.add_row(model_id, "<- in your config" if _same_model(model_id) else "")
     console.print(table)
 
-    if current and current not in available:
+    if current and not any(_same_model(model_id) for model_id in available):
         console.print(
             Panel(
                 f"[bold red]Your configured model '{current}' is NOT in this list.[/bold red]\n"
@@ -1206,8 +1326,7 @@ def testmail(
         console.print(
             Panel(
                 "[bold red]No mailbox credentials.[/bold red]\n\n"
-                "Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in your .env file, "
-                "or run 'email-workflow setup'.",
+                + APP_PASSWORD_HELP,
                 border_style="red",
             )
         )
@@ -1280,8 +1399,7 @@ def testmail(
         console.print(
             Panel(
                 f"[bold red]Sending stopped after {sent} of {len(samples)}.[/bold red]\n\n{e}\n\n"
-                f"[bold yellow]What to do:[/bold yellow]\nGmail needs an App Password, "
-                f"not your normal password. Check GMAIL_APP_PASSWORD in your .env file.",
+                f"[bold yellow]What to do:[/bold yellow]\n" + APP_PASSWORD_HELP,
                 border_style="red",
             )
         )
@@ -1324,8 +1442,10 @@ def settings():
                   "suggest things about you from your own mail")
     console.print(table)
 
-    if not Confirm.ask("\nChange these?", default=False):
-        return
+    # Asked one at a time, not behind a single yes. Each of these does
+    # something different to your mailbox, and a single gate meant people
+    # answered no and never saw the four questions behind it.
+    console.print("\n[dim]Each one, in turn. Press Enter to keep what it says in brackets.[/dim]\n")
 
     # --- sending -----------------------------------------------------------
     if not mail.allow_send:

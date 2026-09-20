@@ -153,21 +153,26 @@ class EmailConfig(BaseModel):
     # How many emails one run may process. 0 means no limit: every unread email
     # inside the age window is handled.
     max_emails_per_run: int = 0
+    # Out of the box it writes drafts and stars what needs you, and does
+    # nothing you cannot undo: it does not send, and it does not move mail out
+    # of your inbox. Both of those are switched on deliberately, once you have
+    # seen what it decides. A default that sends email or empties an inbox
+    # before anyone has been asked is a surprise, not a feature.
+    #
     # Actually send automatic replies. Off by default: sending email on
-    # someone's behalf is not undoable, so it has to be switched on
-    # deliberately. While off, a reply that passed every check is saved as a
-    # draft instead, and the audit log says exactly that.
+    # someone's behalf is not undoable. While off, a reply that passed every
+    # check is saved as a draft instead, and the audit log says exactly that.
     allow_send: bool = False
     # Unimportant mail really leaves the inbox (on Gmail: the Archive
     # button removes the Inbox label; the mail stays in All Mail).
-    archive_unimportant: bool = True
+    archive_unimportant: bool = False
     # Save a draft when a reply is not sent. Turn this off to skip drafts
     # entirely: a reply that cannot be sent is then escalated to you
     # instead, and nothing is left sitting in your Drafts folder.
     create_drafts: bool = True
     # Mail that matters gets a star and a label, so it is easy to find.
     star_important: bool = True
-    important_label: str = "AI/Important"
+    important_label: str = "Important"
 
 class AutomationConfig(BaseModel):
     level: AutomationLevel = AutomationLevel.AUTONOMOUS

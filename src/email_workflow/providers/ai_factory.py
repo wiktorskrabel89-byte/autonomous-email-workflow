@@ -13,6 +13,7 @@ from email_workflow.providers.key_pool import (
     KeyPoolProvider,
     all_limiters,
     discover_key_envs,
+    leaf_providers,
     parallel_lanes,
 )
 from email_workflow.providers.local_ai import OllamaProvider
@@ -31,11 +32,17 @@ def _api_config_for(provider: str, model: Optional[str], key_env: Optional[str],
         api_key_env=key_env or meta.get("env_var", f"{provider.upper()}_API_KEY"),
         temperature=template.temperature,
         max_output_tokens=template.max_output_tokens,
+        # The per-minute limit was NOT inherited, so every fallback provider
+        # quietly used the built-in default instead of the number in
+        # config.yaml. Lower it there and the fallbacks ignored you.
+        requests_per_minute=template.requests_per_minute,
     )
 
 
 def build_provider_chain(
-    config: AppConfig, on_switch: Optional[Callable] = None
+    config: AppConfig,
+    on_switch: Optional[Callable] = None,
+    on_pause: Optional[Callable] = None,
 ) -> List[ProviderLink]:
     """The ordered list of providers to try, primary first.
 
@@ -102,7 +109,7 @@ def build_provider_chain(
             ProviderLink(
                 label=f"{name} x{len(lanes)} keys",
                 model=cfg.model,
-                provider=KeyPoolProvider(lanes, on_switch=on_switch),
+                provider=KeyPoolProvider(lanes, on_switch=on_switch, on_pause=on_pause),
             )
         )
 
@@ -137,13 +144,17 @@ def get_ai_provider(
     config: AppConfig,
     on_switch: Optional[Callable] = None,
     on_throttle: Optional[Callable] = None,
+    on_pause: Optional[Callable] = None,
 ) -> AIProvider:
     """Instantiate and validate the AI provider described by the config.
 
     on_switch(from_link, to_link, error) is called when the chain moves on
     because a provider ran out of quota or stopped working.
     on_throttle(seconds, requests_per_minute) is called when a request has
-    to wait to stay under a per-minute limit.
+    to wait to stay under a per-minute limit we set ourselves.
+    on_pause(seconds, who) is called when the *server* asked us to wait -
+    a refusal that clears by itself, which is waited out rather than treated
+    as the end of that provider.
     """
     if config.ai.mode == AIMode.LOCAL:
         provider: AIProvider = OllamaProvider(config.ai.local)
@@ -163,12 +174,20 @@ def get_ai_provider(
             f"Supported: {', '.join(SUPPORTED)}, fake"
         )
 
-    links = build_provider_chain(config, on_switch=on_switch)
+    links = build_provider_chain(config, on_switch=on_switch, on_pause=on_pause)
 
     if on_throttle:
         for link in links:
             for limiter in all_limiters(link.provider):
                 limiter.on_wait = on_throttle
+
+    if on_pause:
+        # Every provider that really talks to an API, whether it sits alone,
+        # in a key pool or in the chain.
+        for link in links:
+            for leaf in leaf_providers(link.provider):
+                if hasattr(leaf, "on_server_pause"):
+                    leaf.on_server_pause = on_pause
 
     if not links:
         meta = PROVIDER_METADATA[prov_name]
@@ -181,6 +200,6 @@ def get_ai_provider(
         links[0].provider.validate_setup()
         return links[0].provider
 
-    chain = FallbackAIProvider(links, on_switch=on_switch)
+    chain = FallbackAIProvider(links, on_switch=on_switch, on_pause=on_pause)
     chain.validate_setup()
     return chain

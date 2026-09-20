@@ -74,6 +74,14 @@ def imap(monkeypatch):
 
 
 def gmail(**kwargs) -> GmailProvider:
+    """A Gmail account with the mailbox actions switched on.
+
+    They ship OFF, so a fresh install touches nobody's inbox until asked. These
+    tests are about what those actions DO, so they turn them on and say so -
+    rather than leaning on a default that could quietly change under them.
+    """
+    kwargs.setdefault("archive_unimportant", True)
+    kwargs.setdefault("star_important", True)
     return GmailProvider(EmailConfig(provider="gmail", **kwargs))
 
 
@@ -226,7 +234,7 @@ def test_flagging_stars_the_email():
 def test_flagging_applies_a_label():
     gmail().flag_email("<m1@x>")
     labels = [v for _, mode, v in what_was_stored() if mode == "+X-GM-LABELS"]
-    assert labels and "AI/Important" in labels[0]
+    assert labels and "Important" in labels[0]
 
 
 def test_the_label_name_is_configurable():
@@ -299,8 +307,13 @@ def pipeline(tmp_path):
     mailbox = MockEmailProvider()
     facts = tmp_path / "known_facts.txt"
     facts.write_text("- Work hours: 9-17", encoding="utf-8")
+    config = AppConfig()
+    # Shipped off; these tests are about what happens when they are on.
+    config.email.archive_unimportant = True
+    config.email.star_important = True
+    config.email.create_drafts = True
     return mailbox, WorkflowPipeline(
-        config=AppConfig(),
+        config=config,
         ai_provider=FakeAIProvider(),
         email_provider=mailbox,
         store_path=str(tmp_path / "state.json"),

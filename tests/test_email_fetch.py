@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from email_workflow.core.errors import EmailProviderError
 from email_workflow.models.config import EmailConfig
 from email_workflow.providers.email_provider import (
     GmailProvider,
@@ -174,8 +175,15 @@ def test_missing_credentials_is_a_clear_error(monkeypatch):
     monkeypatch.setenv("GMAIL_ADDRESS", "")
     provider.address = ""
     provider.password = ""
-    with pytest.raises(ValueError, match="credentials"):
+    # An EmailProviderError, not a bare ValueError: the CLI knows how to show
+    # one of those as advice, and it carries the app-password instructions.
+    with pytest.raises(EmailProviderError, match="credentials") as failure:
         provider.fetch_unprocessed_emails()
+
+    assert "2-Step Verification" in failure.value.hint, (
+        "an app password cannot even be created until that is on, and Google's "
+        "own page never says so"
+    )
 
 
 # --- date helper ------------------------------------------------------------
