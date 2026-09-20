@@ -296,6 +296,19 @@ class AppConfig(BaseModel):
     @classmethod
     def load_from_file(cls, path: Union[str, Path]) -> "AppConfig":
         file_path = resolve_project_file(path)
+
+        # config.yaml is YOUR file and is not in the repository - it holds your
+        # address, whether sending is allowed, your labels. It used to be
+        # tracked, and the app's own "git add -A" during an update committed it
+        # and published it. What ships is config.example.yaml, copied here the
+        # first time the app needs one, so a fresh clone still starts.
+        if not file_path.exists():
+            example = file_path.with_name("config.example.yaml")
+            if example.exists():
+                file_path.write_text(
+                    example.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+
         if not file_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {file_path}")
         with open(file_path, "r", encoding="utf-8") as f:

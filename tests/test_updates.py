@@ -312,3 +312,64 @@ def test_a_real_install_failure_is_still_a_real_failure():
         "[WinError 32] used by another process: 'some_other_file.dll'"
     )
     assert not _only_the_launcher_was_locked("")
+
+
+# --- your own settings are not in the repository ----------------------------
+
+def test_config_yaml_is_not_tracked():
+    """It holds your address, whether sending is on, and your labels. It was
+    tracked, and the app's own "git add -A" during an update committed it and
+    published it to a public repository. What ships is the example."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    listed = subprocess.run(
+        ["git", "ls-files", "config.yaml", "config.example.yaml"],
+        cwd=root, capture_output=True, text=True,
+    ).stdout.split()
+    assert "config.example.yaml" in listed, "the template has to ship"
+    assert "config.yaml" not in listed, (
+        "your own settings must never be in the repository"
+    )
+
+
+def test_the_shipped_example_has_nobody_in_it():
+    from pathlib import Path
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    data = yaml.safe_load((root / "config.example.yaml").read_text(encoding="utf-8"))
+    assert "example.com" in data["email"]["account_ref"]
+    assert data["email"]["allow_send"] is False, (
+        "a template that sends email on someone's behalf is a trap"
+    )
+
+
+def test_a_missing_config_is_created_from_the_example(tmp_path, monkeypatch):
+    """A fresh clone has no config.yaml at all now, so the app has to make one
+    or it cannot start - including on GitHub Actions."""
+    from email_workflow.models import config as config_module
+
+    (tmp_path / "config.example.yaml").write_text(
+        "email:\n  provider: mock\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(config_module, "resolve_project_file",
+                        lambda p: tmp_path / str(p))
+
+    loaded = config_module.AppConfig.load_from_file("config.yaml")
+    assert (tmp_path / "config.yaml").exists(), "it should have been created"
+    assert loaded.email.provider == "mock"
+
+
+def test_your_settings_are_never_overwritten_by_that(tmp_path, monkeypatch):
+    from email_workflow.models import config as config_module
+
+    (tmp_path / "config.example.yaml").write_text(
+        "email:\n  provider: mock\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "email:\n  provider: gmail\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "resolve_project_file",
+                        lambda p: tmp_path / str(p))
+
+    assert config_module.AppConfig.load_from_file("config.yaml").email.provider == "gmail"

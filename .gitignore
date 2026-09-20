@@ -10,6 +10,10 @@ audit.jsonl
 state_*.json
 audit_*.jsonl
 
+# your own settings: your address, whether sending is on, your labels.
+# config.example.yaml is what ships.
+config.yaml
+
 # local login (hashed, but still private)
 auth.json
 # personal knowledge base and run bookkeeping

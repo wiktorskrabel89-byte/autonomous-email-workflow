@@ -1,3 +1,5 @@
+# The shipped template. Copied to config.yaml the first time the app
+# needs one; your own config.yaml is never in the repository.
 ai:
   api:
     api_key_env: GEMINI_API_KEY
@@ -41,46 +43,27 @@ automation:
   confidence_threshold_draft: 0.6
   learn_facts_from_email: true
   level: autonomous
-  never_archive_about:
-  - job offers, recruitment, and anything about my job applications
+  never_archive_about: []
   trusted_categories:
   - newsletter
   - receipt
   - notification
   - work
 email:
-  account_ref: wiktorskrabel89@gmail.com
-  allow_send: true
+  account_ref: your.address@example.com
+  allow_send: false
   archive_unimportant: true
   create_drafts: true
   important_label: Priorytet
+  labelled_leave_inbox: false
   labels:
-  - about: discount codes, sales and promotional offers from shops - for example -10%
-      from Modivo, -30% from Reserved, Travelist deals
+  - about: discount codes, sales and promotional offers from shops
     keep_in_inbox: false
-    name: Rabaty
-  - about: anything to do with work and hiring - job adverts and offers, recruitment
-      mail, job alerts, 'last chance to send a CV', and employers replying about an
-      application I sent. Pracuj.pl, Praca.pl, OLX praca, LinkedIn jobs
+    name: Deals
+  - about: job adverts, recruitment mail, and employers replying about an application
+      I sent
     keep_in_inbox: true
-    name: Praca
-  - about: orders, deliveries, parcels and receipts - InPost, Allegro, Amazon, a shop
-      confirming an order or a courier tracking a parcel
-    keep_in_inbox: false
-    name: Zakupy
-  - about: money - bank messages, invoices, payments, subscription charges, insurance
-      and anything asking me to pay or confirming I paid
-    keep_in_inbox: true
-    name: Finanse
-  - about: account and security mail - login alerts, password resets, verification
-      codes, two-factor prompts, suspicious sign-in warnings
-    keep_in_inbox: true
-    name: Bezpieczenstwo
-  - about: newsletters and social notices I subscribed to - Legimi, Wisla Krakow,
-      shopping and sports newsletters, LinkedIn and OLX activity. NOT job adverts
-      or recruitment mail, which are Praca even when they arrive as a newsletter
-    keep_in_inbox: false
-    name: Newslettery
+    name: Jobs
   mailbox: INBOX
   max_age_days: 7
   max_emails_per_run: 0
@@ -91,6 +74,7 @@ email:
 notifications:
   channel: discord
   digest_mode: immediate
+  per_email: false
   show_message_breakdown: false
 security:
   max_login_attempts: 3
