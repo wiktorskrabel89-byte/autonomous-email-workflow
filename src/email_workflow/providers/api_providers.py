@@ -580,6 +580,7 @@ class OpenAICompatibleProvider(AIProvider):
             thread_context=self._format_thread(thread, "No earlier messages in this thread."),
             known_facts=known_facts or "None provided.",
             protected_topics=self.protected_topics_block(),
+            your_labels=self.labels_block(),
         )
         verdict = self._call_model_with_json_retry(prompt, ClassificationVerdict)
 

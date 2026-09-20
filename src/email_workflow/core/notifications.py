@@ -33,6 +33,25 @@ def gmail_link(message_id: str) -> Optional[str]:
     return GMAIL_SEARCH + quote(cleaned, safe="")
 
 
+def group_by_label(run_results: list) -> Dict[str, list]:
+    """{label: [subject, ...]} for everything that was filed somewhere.
+
+    Ordered by how full each label is, because the interesting question after
+    a run of 145 emails is "where did it all go", and the biggest pile is the
+    answer. Anything not filed is left out entirely rather than shown under an
+    "(unlabelled)" heading nobody asked for.
+    """
+    grouped: Dict[str, list] = {}
+    for result in run_results:
+        label = (result.get("filed_under") or "").strip()
+        if not label:
+            continue
+        analysis = result.get("analysis")
+        subject = getattr(analysis, "subject", "") or result.get("message_id", "")
+        grouped.setdefault(label, []).append(subject[:70])
+    return dict(sorted(grouped.items(), key=lambda kv: (-len(kv[1]), kv[0])))
+
+
 def reply_outcome(decision: DecisionOption, reply_id, tick: str = "") -> str:
     """Say what really happened to the written reply.
 
@@ -99,6 +118,8 @@ class NotificationDispatcher:
         escalated = [r for r in run_results if r.get("decision") in (DecisionOption.ESCALATE, DecisionOption.NOTIFY_ME)]
         archived = [r for r in run_results if r.get("decision") in (DecisionOption.ARCHIVE, DecisionOption.IGNORE)]
 
+        by_label = group_by_label(run_results)
+
         lines = [
             "=== BATCH RUN COMPLETION SUMMARY REPORT ===",
             f"AI Engine: {provider_name} ({model_name})",
@@ -108,6 +129,17 @@ class NotificationDispatcher:
             f"  - Escalated / Human Review: {len(escalated)}",
             f"  - Archived / Ignored: {len(archived)}",
         ]
+
+        # What went where. A count of "42 archived" says nothing about where
+        # any of it ended up; this is the line that makes filing visible.
+        if by_label:
+            lines += ["", "--- Filed under your labels ---"]
+            for label, subjects in by_label.items():
+                lines.append(f"  {label}: {len(subjects)}")
+                for subject in subjects[:5]:
+                    lines.append(f"      - {subject}")
+                if len(subjects) > 5:
+                    lines.append(f"      ... and {len(subjects) - 5} more")
 
         # Off by default: it repeats what the run already printed line by line,
         # and the raw message ids turn into mailto: links in Discord.
@@ -146,6 +178,20 @@ class NotificationDispatcher:
                             ),
                             "inline": False,
                         },
+                    ] + [
+                        # One field per label, so Discord shows them side by
+                        # side as sections rather than as one wall of text.
+                        {
+                            "name": f"🏷️ {label} ({len(subjects)})",
+                            "value": (
+                                "\n".join(f"• {s}" for s in subjects[:8])
+                                + (f"\n… and {len(subjects) - 8} more"
+                                   if len(subjects) > 8 else "")
+                            )[:1024] or "-",
+                            "inline": True,
+                        }
+                        for label, subjects in by_label.items()
+                    ] + [
                         {
                             "name": "📬 Processed Messages Breakdown",
                             "value": report_text[:1024],

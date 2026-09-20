@@ -141,6 +141,18 @@ class AIConfig(BaseModel):
     keys: KeysConfig = Field(default_factory=KeysConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
 
+class EmailLabel(BaseModel):
+    """One label of your own, and what belongs in it.
+
+    `about` is the whole point: it is what the AI is shown, in your words, so
+    it can tell a -10% code from Modivo apart from a delivery notice. Without
+    it a label name like "Rabaty" means nothing to a model reading Polish
+    marketing mail.
+    """
+
+    name: str
+    about: str = ""
+
 class EmailConfig(BaseModel):
     provider: str = "mock"
     account_ref: str = "user@example.com"
@@ -179,6 +191,15 @@ class EmailConfig(BaseModel):
     # automatically (see gmail_label), but the shipped default should not need
     # rescuing.
     important_label: str = "AI/Important"
+    # Labels of your own, and what belongs in each. An email that matches one
+    # gets that Gmail label BEFORE anything else happens to it - so a discount
+    # code still leaves your inbox, but it lands under "Rabaty" instead of
+    # disappearing into All Mail with everything else. Empty means the app
+    # applies no labels of its own beyond important_label.
+    #
+    # Gmail makes a label the first time one is used, and a "/" in the name
+    # makes it a sub-label: "Zakupy/Rabaty" nests under Zakupy.
+    labels: List[EmailLabel] = Field(default_factory=list)
 
 class AutomationConfig(BaseModel):
     level: AutomationLevel = AutomationLevel.AUTONOMOUS

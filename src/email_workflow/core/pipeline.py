@@ -14,6 +14,23 @@ from email_workflow.core.notifications import NotificationDispatcher
 
 from email_workflow.core.known_facts import KnownFactsManager
 
+def _label_to_apply(analysis, config) -> str:
+    """The label this email should be filed under, or "".
+
+    Only ever a label the user actually configured. A model that invents a
+    label would have Gmail create it, and a sidebar quietly filling up with
+    labels nobody asked for is worse than no filing at all - so the name has
+    to match one of theirs, ignoring case and surrounding space.
+    """
+    suggested = (getattr(analysis, "suggested_label", "") or "").strip()
+    if not suggested:
+        return ""
+    for label in getattr(config.email, "labels", ()) or ():
+        if label.name.strip().lower() == suggested.lower():
+            return label.name
+    return ""
+
+
 class WorkflowPipeline:
     def __init__(
         self,
@@ -191,6 +208,24 @@ class WorkflowPipeline:
         )
 
         self.idempotency.update_stage(email.message_id, email.thread_id, ProcessingStage.DECIDED)
+
+        # 5b. File it under one of your own labels, BEFORE anything else is
+        # done to it. On Gmail, archiving means deleting the message out of
+        # INBOX and expunging it; after that there is nothing left in INBOX to
+        # put a label on. Doing it here is what makes "archive it, but into
+        # Rabaty" work - the mail leaves the inbox and is still somewhere you
+        # can find it, rather than disappearing into All Mail with everything
+        # else.
+        filed_under = _label_to_apply(analysis, self.config)
+        if filed_under:
+            self.email.apply_label(email.message_id, filed_under)
+            self.audit.log_event(
+                event_type="labelled",
+                message_id=email.message_id,
+                thread_id=email.thread_id,
+                detail=f"Filed under '{filed_under}'",
+                run_metadata=run_meta,
+            )
 
         # 6. Branching Execution based on Decision
         draft_id = None
@@ -406,6 +441,7 @@ class WorkflowPipeline:
             "message_id": email.message_id,
             "thread_id": email.thread_id,
             "analysis": analysis,
+            "filed_under": filed_under,
             "decision": decision,
             "decision_reason": decision_reason,
             "draft_id": draft_id,

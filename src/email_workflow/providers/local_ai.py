@@ -121,6 +121,7 @@ class OllamaProvider(AIProvider):
             thread_context=thread_context,
             known_facts=known_facts or "None provided.",
             protected_topics=self.protected_topics_block(),
+            your_labels=self.labels_block(),
         )
         res_dict = self._generate_json(prompt)
         verdict = ClassificationVerdict.model_validate(res_dict)

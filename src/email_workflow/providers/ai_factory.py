@@ -157,10 +157,15 @@ def get_ai_provider(
     as the end of that provider.
     """
     topics = tuple(getattr(config.automation, "never_archive_about", ()) or ())
+    labels = tuple(
+        (label.name, label.about)
+        for label in (getattr(config.email, "labels", ()) or ())
+    )
 
     if config.ai.mode == AIMode.LOCAL:
         provider: AIProvider = OllamaProvider(config.ai.local)
         provider.never_archive_about = topics
+        provider.labels = labels
         provider.validate_setup()
         return provider
 
@@ -169,6 +174,7 @@ def get_ai_provider(
     if prov_name == "fake":
         provider = FakeAIProvider()
         provider.never_archive_about = topics
+        provider.labels = labels
         provider.validate_setup()
         return provider
 
@@ -193,6 +199,7 @@ def get_ai_provider(
             # prompt of whichever provider actually answers - including the
             # one the chain falls over to.
             leaf.never_archive_about = topics
+            leaf.labels = labels
             if on_pause and hasattr(leaf, "on_server_pause"):
                 leaf.on_server_pause = on_pause
 

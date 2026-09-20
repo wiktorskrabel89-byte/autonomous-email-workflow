@@ -23,7 +23,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from email_workflow.models.config import AppConfig, AIMode
+from email_workflow.models.config import AppConfig, AIMode, EmailLabel
 from email_workflow.models.email import EmailMessage, EmailCategory, ImportanceLevel, UrgencyLevel, DecisionOption, SenderInfo
 from email_workflow.models.analysis import EmailAnalysis
 from email_workflow.providers.ai_factory import get_ai_provider
@@ -371,11 +371,13 @@ def interactive_main_menu():
             "[dim](send replies? keep drafts?)[/dim]\n"
             "[bold yellow]12.[/bold yellow] Update the App "
             "[dim](get the newest version, keeps your settings)[/dim]\n"
-            "[bold yellow]13.[/bold yellow] Exit\n"
+            "[bold yellow]13.[/bold yellow] Sort Mail Into Your Own Labels "
+            "[dim](Rabaty, Job offers - filed, not just archived)[/dim]\n"
+            "[bold yellow]14.[/bold yellow] Exit\n"
         )
         console.print(Panel(menu_text, border_style="cyan"))
 
-        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"], default="1")
+        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"], default="1")
 
         if choice == "1":
             console.clear()
@@ -436,6 +438,10 @@ def interactive_main_menu():
             update(check=False)
             Prompt.ask("\nPress Enter to return to main menu")
         elif choice == "13":
+            console.clear()
+            labels()
+            Prompt.ask("\nPress Enter to return to main menu")
+        elif choice == "14":
             console.print("[bold green]Goodbye![/bold green]")
             sys.exit(0)
 
@@ -2022,6 +2028,92 @@ def _rewrite_facts(mgr, current):
 
     _save_facts(mgr, new_text + "\n", current)
     console.print("[bold green][OK] Replaced.[/bold green]")
+
+
+@app.command()
+def labels():
+    """Sort your mail into labels of your own - Rabaty, Job offers, whatever."""
+    print_banner("YOUR LABELS")
+    config_path = resolve_project_file("config.yaml")
+    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+
+    console.print(Panel(
+        "A label is a name plus a sentence saying what belongs in it.\n\n"
+        "The sentence is the part that matters: it is what the AI reads, in "
+        "your words, so it can tell a [bold]-10% code from Modivo[/bold] apart "
+        "from a delivery notice. The name is just what you see in Gmail.\n\n"
+        "Mail that matches gets the label [bold]before[/bold] anything else "
+        "happens to it - so a discount still leaves your inbox, but it lands "
+        "under [bold]Rabaty[/bold] instead of disappearing into All Mail.\n\n"
+        "[dim]Gmail makes a label the first time it is used. A \"/\" nests "
+        "it: \"Zakupy/Rabaty\" sits under Zakupy.[/dim]",
+        title="What these are for",
+        border_style="cyan",
+    ))
+
+    while True:
+        current = list(config.email.labels or [])
+        if current:
+            table = Table(border_style="cyan", title="Your labels")
+            table.add_column("Label", style="bold white")
+            table.add_column("What goes in it", style="dim")
+            for item in current:
+                table.add_row(item.name, item.about or "[not said]")
+            console.print(table)
+        else:
+            console.print("[dim]You have none yet. Nothing is being filed.[/dim]\n")
+
+        console.print(
+            "\n[bold yellow]1.[/bold yellow] Add one\n"
+            "[bold yellow]2.[/bold yellow] Remove one\n"
+            "[bold yellow]3.[/bold yellow] Back\n"
+        )
+        choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="3")
+
+        if choice == "3":
+            return
+
+        if choice == "1":
+            name = Prompt.ask("Label name (what you will see in Gmail)").strip()
+            if not name:
+                continue
+            if any(item.name.lower() == name.lower() for item in current):
+                console.print(f"[yellow]You already have '{name}'.[/yellow]\n")
+                continue
+            about = Prompt.ask(
+                "What belongs in it? (a sentence, in your own words)"
+            ).strip()
+            if not about:
+                # A label with no description is a name the AI cannot act on.
+                console.print(
+                    "[yellow]Without a description the AI has nothing to go "
+                    "on, so nothing would ever be filed there. Not added.[/yellow]\n"
+                )
+                continue
+            current.append(EmailLabel(name=name, about=about))
+
+        elif choice == "2":
+            if not current:
+                continue
+            which = Prompt.ask(
+                "Which one? (its name)",
+                choices=[item.name for item in current],
+            )
+            current = [item for item in current if item.name != which]
+            console.print(
+                f"[dim]Removed. The label itself stays in Gmail with whatever "
+                f"is already in it - this only stops new mail going there.[/dim]"
+            )
+
+        config.email.labels = current
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                import yaml
+                yaml.safe_dump(config.model_dump(mode="json"), f,
+                               default_flow_style=False, allow_unicode=True)
+            console.print("[green]Saved.[/green]\n")
+        except OSError as e:
+            console.print(f"[yellow]Could not save: {e}[/yellow]\n")
 
 
 @app.command()

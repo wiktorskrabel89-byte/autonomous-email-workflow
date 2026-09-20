@@ -79,6 +79,14 @@ as it is written above. If none of them fit, protected_topic is "".
 Judge the subject matter, not the wording: the list is in their words, the mail
 may be in any language.
 
+## Step 3d - Which of their own labels does this belong under?
+{your_labels}
+Copy the label's name into suggested_label exactly as it is written above, or
+"" if none of them fits. Judge it by what the email IS, using the description
+next to each name - the names may be in one language and the mail in another.
+Do not invent a label that is not on that list, and do not reach: an email in
+the wrong folder is harder to find than one left where it was.
+
 ## Step 4 - Decide, using the first rule that matches
 1. Category security, account or financial, or anything that ASKS us to pay,
    authorise, confirm or hand over: passwords, login codes, payment details,
@@ -139,6 +147,7 @@ Reply with JSON only. No prose, no markdown fence. Exactly these keys:
   "commitments_implied": [],
   "personally_addressed": false,
   "protected_topic": "",
+  "suggested_label": "",
   "recommended_decision": "ignore|archive|notify_me|create_draft|wait_for_approval|automatically_reply|escalate",
   "reasoning": "2-4 sentences: what this email wants, which Step 4 rule you applied and why, and what made you uncertain."
 }}
@@ -299,6 +308,25 @@ class AIProvider(ABC):
             "They asked that mail about any of these is never filed away:\n"
             f"{listed}"
         )
+
+    # The labels this person keeps, as (name, what belongs in it) pairs. Set by
+    # the factory from config.yaml. A tuple for the same reason as above.
+    labels: tuple = ()
+
+    def labels_block(self) -> str:
+        """The Step 3d block of the classification prompt."""
+        kept = [
+            (str(name).strip(), str(about or "").strip())
+            for name, about in (self.labels or ())
+            if str(name).strip()
+        ]
+        if not kept:
+            return 'This person keeps no labels of their own. Leave suggested_label empty ("").'
+        listed = "\n".join(
+            f'  - "{name}"' + (f" - {about}" if about else "")
+            for name, about in kept
+        )
+        return "Their labels, and what each one is for:\n" + listed
 
     def describe(self) -> tuple:
         """(provider, model) that would actually handle the next call.

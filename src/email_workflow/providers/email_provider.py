@@ -186,6 +186,14 @@ class EmailProvider(ABC):
         """Fetch pending / unprocessed emails from mailbox."""
         pass
 
+    def apply_label(self, message_id: str, label: str) -> None:
+        """File a message under one of the user's own labels.
+
+        Not abstract, and does nothing by default: a mailbox with no notion of
+        labels should quietly not label things, not stop the run.
+        """
+        return None
+
     @abstractmethod
     def create_draft(self, message_id: str, reply_subject: str, reply_body: str,
                      to_address: Optional[str] = None) -> str:
@@ -212,6 +220,7 @@ class MockEmailProvider(EmailProvider):
         self.inbox_path = inbox_path
         self.emails: List[EmailMessage] = []
         self.drafts: List[dict] = []
+        self.labelled: List[tuple] = []
         self.sent: List[dict] = []
         self.archived: List[str] = []
         self.flagged: List[tuple] = []
@@ -261,6 +270,10 @@ class MockEmailProvider(EmailProvider):
 
     def flag_email(self, message_id: str, label: Optional[str] = None) -> None:
         self.flagged.append((message_id, label))
+
+    def apply_label(self, message_id: str, label: str) -> None:
+        if label:
+            self.labelled.append((message_id, label))
 
 class GmailProvider(EmailProvider):
     """
@@ -605,6 +618,21 @@ class GmailProvider(EmailProvider):
                 f"Could not archive {message_id} on {self.imap_server}: {e}. "
                 f"It was not archived. If it is still unread, the next run will try again."
             )
+
+    def apply_label(self, message_id: str, label: str) -> None:
+        """File it under one of your own labels, without starring it.
+
+        Separate from flag_email on purpose. Starring says "this needs you";
+        a label says "this is what it is". A discount code wants the second
+        and not the first, and star_important must not switch filing off.
+
+        Called BEFORE the message is archived. On Gmail archiving means
+        deleting it out of INBOX and expunging, and after that there is
+        nothing left in INBOX to label.
+        """
+        if not label or not self.supports_gmail_labels:
+            return
+        self._mark(message_id, add_labels=label, what=f"file under {label}")
 
     def flag_email(self, message_id: str, label: Optional[str] = None) -> None:
         """Star it, and file it under a label, so it is easy to come back to.

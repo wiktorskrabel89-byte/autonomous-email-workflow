@@ -431,9 +431,25 @@ def test_the_menu_offers_updating(project, monkeypatch):
     assert opened == [False], "option 12 did not open the updater"
 
 
+def menu_numbers(project) -> set:
+    """The numbers the menu actually prints.
+
+    Worked out rather than written down, so adding an option renumbers these
+    tests with it instead of breaking them - which is what happened when
+    "Sort mail into your own labels" pushed Exit from 13 to 14.
+    An invalid choice makes it print the menu and stop without running
+    anything.
+    """
+    import re
+
+    shown = runner.invoke(cli_module.app, [], input="99\n")
+    return {int(n) for n in re.findall(r"(\d+)\.\s", shown.output)}
+
+
 def test_exit_is_the_last_number_and_it_works(project):
     write_config(project, require_login=False)
-    result = runner.invoke(cli_module.app, [], input="13\n")
+    last = max(menu_numbers(project))
+    result = runner.invoke(cli_module.app, [], input=f"{last}\n")
     assert "Goodbye" in result.output
 
 
@@ -443,8 +459,7 @@ def test_every_number_the_menu_shows_is_accepted(project):
     import re
 
     write_config(project, require_login=False)
-    result = runner.invoke(cli_module.app, [], input="13\n")
-    shown = {int(n) for n in re.findall(r"(\d+)\.\s", result.output)}
+    shown = menu_numbers(project)
     assert shown, "no numbered options were printed"
 
     highest = max(shown)
@@ -452,7 +467,7 @@ def test_every_number_the_menu_shows_is_accepted(project):
         f"the menu numbering has a gap or a duplicate: {sorted(shown)}"
     )
 
-    refused = runner.invoke(cli_module.app, [], input=f"{highest + 1}\n13\n")
+    refused = runner.invoke(cli_module.app, [], input=f"{highest + 1}\n{highest}\n")
     assert "Goodbye" in refused.output, (
         "a number past the end of the menu was accepted"
     )

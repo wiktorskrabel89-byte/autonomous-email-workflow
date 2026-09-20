@@ -37,6 +37,10 @@ class ClassificationVerdict(BaseModel):
     # Which of the user's own never-archive topics this is about, copied
     # verbatim from the list it was given. Empty when none of them fit.
     protected_topic: str = ""
+    # Which of the user's own labels this belongs under, copied verbatim from
+    # the list it was given. Empty when none of them fit - a label nobody asked
+    # for is worse than no label.
+    suggested_label: str = ""
 
 class EmailAnalysis(BaseModel):
     message_id: str
@@ -58,6 +62,7 @@ class EmailAnalysis(BaseModel):
     reasoning: str
     personally_addressed: bool = False
     protected_topic: str = ""
+    suggested_label: str = ""
 
 class DecisionSupportOutput(BaseModel):
     missing_information: List[str] = Field(default_factory=list)
