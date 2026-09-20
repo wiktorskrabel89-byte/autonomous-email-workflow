@@ -264,12 +264,51 @@ def _require_login() -> None:
     raise typer.Exit(code=1)
 
 
+def nothing_is_set_up(config) -> bool:
+    """True when this copy has never been configured, so it could not work.
+
+    Deliberately judged from what is actually there rather than from a "have I
+    run before" marker: a marker can be true while the key it refers to has
+    been deleted, and then the app sends someone to a menu where every option
+    fails. These two are what the app cannot work without.
+
+    A mock inbox or the fake provider is somebody testing on purpose, and is
+    left alone.
+    """
+    if config.ai.api.provider.lower() == "fake" or config.email.provider == "mock":
+        return False
+    has_key = bool((os.getenv(config.ai.api.api_key_env) or "").strip())
+    has_mailbox = bool((os.getenv("GMAIL_ADDRESS") or "").strip())
+    return not (has_key and has_mailbox)
+
+
 @app.callback(invoke_without_command=True)
 def main_callback(ctx: typer.Context):
     """Default callback launching interactive main menu if no command argument is passed."""
     _require_login()
-    if ctx.invoked_subcommand is None:
-        interactive_main_menu()
+    if ctx.invoked_subcommand is not None:
+        return
+
+    # First run: go straight into the wizard rather than showing a menu whose
+    # every option would fail for want of a key and a mailbox. The menu is
+    # still there afterwards, and option 3 reopens this wizard any time.
+    if nothing_is_set_up(_load_config_quietly()):
+        console.print(Panel(
+            "[bold]Nothing is set up yet, so this is the setup wizard.[/bold]\n\n"
+            "It needs two things to work: an AI key and your mailbox. This asks "
+            "for both, then a couple of questions about you.\n\n"
+            "[dim]Everything stays on this machine. You can stop at any point "
+            "with Ctrl+C, and reopen this from the menu (option 3).[/dim]",
+            title="Welcome",
+            border_style="cyan",
+        ))
+        try:
+            setup()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Setup stopped. Nothing was saved.[/yellow]")
+            return
+
+    interactive_main_menu()
 
 
 @app.command()
@@ -306,7 +345,7 @@ def passwd():
         console.print("[bold green][OK] Password changed.[/bold green]")
         return
 
-from email_workflow.core.known_facts import KnownFactsManager, facts_lost
+from email_workflow.core.known_facts import KnownFactsManager, append_fact, facts_lost
 
 def interactive_main_menu():
     """Interactive main menu with numbered options."""
@@ -666,6 +705,8 @@ def setup():
             "[dim]Left as they are. Run [bold]email-workflow settings[/bold] "
             "whenever you want them.[/dim]"
         )
+
+    _ask_about_you(config, config_path)
 
     console.print(Panel(
         "[bold green]Setup finished.[/bold green]\n\n"
@@ -2053,6 +2094,95 @@ def _only_the_launcher_was_locked(output: str) -> bool:
         or "używany przez inny proces" in text
     )
     return locked and "email-workflow.exe" in text
+
+
+def _ask_a_few(question: str, example: str, limit: int = 3) -> list:
+    """Up to `limit` short answers, Enter to stop. Never loops for ever."""
+    answers = []
+    for n in range(limit):
+        if n == 0:
+            console.print(f"[dim]for example: {example}[/dim]")
+        answer = Prompt.ask(f"  {n + 1}", default="").strip()
+        if not answer:
+            break
+        answers.append(answer)
+    return answers
+
+
+def _ask_about_you(config, config_path) -> None:
+    """The last step of the wizard: what to tell you about, and who you are.
+
+    These are two halves of the same thing, which is why they are asked
+    together. What it tells you about is what it must never file away, and what
+    it knows about you is what it may say on your behalf - and the app is only
+    as useful as those two lists. With both empty it archives things that
+    mattered (the reason this step exists) and answers every question with
+    "[NEEDS INPUT]".
+    """
+    console.print(Panel(
+        "[bold]Last thing: tell it about you.[/bold]\n\n"
+        "Two short lists, and they go together.\n\n"
+        "[bold]1. What should it always tell you about?[/bold] Anything on that "
+        "list is starred and left in your inbox, however routine it looks - it "
+        "is never filed away.\n"
+        "[bold]2. What should it know about you?[/bold] These are the only "
+        "facts it may state as yours when it writes a reply. It never invents "
+        "one; without them it just says a detail is missing.\n\n"
+        "[dim]Press Enter on an empty line to move on. Both can be changed "
+        "later - 'email-workflow settings' and 'email-workflow facts'.[/dim]",
+        title="About you",
+        border_style="cyan",
+    ))
+
+    console.print("\n[bold cyan]Things to always tell you about[/bold cyan]")
+    topics = _ask_a_few(
+        "topic",
+        "job offers and anything about my applications  /  "
+        "anything from my landlord  /  my daughter's school",
+    )
+    if topics:
+        existing = list(config.automation.never_archive_about or [])
+        config.automation.never_archive_about = existing + [
+            t for t in topics if t not in existing
+        ]
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                import yaml
+                yaml.safe_dump(
+                    config.model_dump(mode="json"), f,
+                    default_flow_style=False, allow_unicode=True,
+                )
+            console.print(f"[green]Saved {len(topics)}. Those are never archived.[/green]")
+        except OSError as e:
+            console.print(f"[yellow]Could not save those to config.yaml: {e}[/yellow]")
+    else:
+        console.print("[dim]None given. Routine mail is filed away as usual.[/dim]")
+
+    console.print("\n[bold cyan]Things it should know about you[/bold cyan]")
+    facts = _ask_a_few(
+        "fact",
+        "I work 9 to 5 CET  /  I am free for calls on Wednesday afternoons  /  "
+        "I am a freelance designer",
+    )
+    if not facts:
+        console.print(
+            "[dim]None given. It will not invent any - it will say a detail is "
+            "missing instead. Add them later with 'email-workflow facts'.[/dim]"
+        )
+        return
+
+    manager = KnownFactsManager()
+    try:
+        # Appended one at a time, never written over the top: this file is a
+        # knowledge base someone has built up, and replacing it wholesale has
+        # eaten one before.
+        text = manager.load_facts()
+        for fact in facts:
+            text = append_fact(text, fact)
+        manager.save_facts(text)
+        console.print(f"[green]Saved {len(facts)}. Nothing already there was touched.[/green]")
+    except Exception as e:
+        console.print(f"[yellow]Could not save those: {e}[/yellow]")
 
 
 def _shell(argv, cwd=None, stdin_text=None, interactive=False):
