@@ -65,6 +65,41 @@ APP_PASSWORD_HELP = (
 )
 
 
+# Names Gmail keeps for itself. Over IMAP these are system labels written with
+# a leading backslash (\Important, \Starred); asking for the bare word instead
+# is asking Gmail to make a user label it will not make, and it answers BAD.
+#
+# This is what broke starring: important_label was changed from "AI/Important"
+# to "Important", every STORE was refused, and - because one refusal aborted
+# the whole command - it was reported as "could not star", which was not even
+# the part that failed.
+RESERVED_GMAIL_LABELS = frozenset({
+    "inbox", "starred", "sent", "draft", "drafts", "spam", "trash", "junk",
+    "important", "all mail", "allmail", "unread", "read", "chat", "chats",
+    "muted", "category", "personal", "social", "promotions", "updates",
+    "forums",
+})
+
+
+def gmail_label(name: str) -> str:
+    """One label, ready to put in an X-GM-LABELS command.
+
+    A name starting with a backslash is one of Gmail's own (\\Important) and
+    goes through untouched and unquoted. Anything else is a label of yours: it
+    is quoted, because most of them have spaces in, and moved out of Gmail's
+    way if it collides with a reserved name - "Important" becomes
+    "AI/Important", which is a label Gmail will happily create.
+    """
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if name.startswith("\\"):
+        return name
+    if name.lower() in RESERVED_GMAIL_LABELS:
+        name = f"AI/{name}"
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _looks_like_a_login_refusal(e: Exception) -> bool:
     """Whether the server turned the credentials down, rather than the network.
 
@@ -538,7 +573,7 @@ class GmailProvider(EmailProvider):
 
                 status, data = mail.uid("SEARCH", None, f'HEADER Message-ID "{message_id}"')
                 if status != "OK" or not data or not data[0]:
-                    self.last_archive_error = (
+                    self._problem(
                         f"Could not find {message_id} in the inbox to archive it."
                     )
                     return
@@ -546,7 +581,7 @@ class GmailProvider(EmailProvider):
                 for uid in data[0].split():
                     status, _ = mail.uid("STORE", uid, "+FLAGS", "(\\Seen \\Deleted)")
                     if status != "OK":
-                        self.last_archive_error = (
+                        self._problem(
                             f"The mail server refused to archive {message_id} "
                             f"(status {status})."
                         )
@@ -559,14 +594,14 @@ class GmailProvider(EmailProvider):
                         # in the inbox, never archived, never looked at
                         # again. Put it back the way it was.
                         mail.uid("STORE", uid, "-FLAGS", "(\\Seen \\Deleted)")
-                        self.last_archive_error = (
+                        self._problem(
                             f"Could not take {message_id} out of the inbox: "
                             f"the server would not expunge it. It has been put "
                             f"back as unread and will be tried again next run."
                         )
                         return
         except Exception as e:
-            self.last_archive_error = (
+            self._problem(
                 f"Could not archive {message_id} on {self.imap_server}: {e}. "
                 f"It was not archived. If it is still unread, the next run will try again."
             )
@@ -627,36 +662,64 @@ class GmailProvider(EmailProvider):
 
                 found = self._find(mail, message_id)
                 if not found:
-                    self.last_archive_error = (
+                    self._problem(
                         f"Could not find {message_id} in the mailbox to {what} it."
                     )
                     return
 
                 for num in found:
-                    # The status was previously thrown away, so a command the
-                    # server refused looked exactly like one it accepted.
+                    # Each step stands on its own. They used to share one try,
+                    # so a refused label threw away a star that had already
+                    # been applied - and the failure was then reported as
+                    # "could not star", which was not the part that failed.
                     if add_flags:
-                        status, _ = mail.store(num, "+FLAGS", add_flags)
-                        if status != "OK":
-                            self.last_archive_error = (
-                                f"The mail server refused to {what} {message_id} "
-                                f"(status {status})."
-                            )
+                        self._store(mail, num, "+FLAGS", add_flags,
+                                    f"{what} {message_id}")
                     if add_labels and self.supports_gmail_labels:
                         # Gmail makes the label exist on first use.
-                        status, _ = mail.store(num, "+X-GM-LABELS", f'"{add_labels}"')
-                        if status != "OK":
-                            self.last_archive_error = (
-                                f"The mail server refused the label "
-                                f"'{add_labels}' on {message_id} (status {status})."
-                            )
+                        label = gmail_label(add_labels)
+                        if label:
+                            self._store(mail, num, "+X-GM-LABELS", label,
+                                        f"put the label {label} on {message_id}")
                     if remove_labels and self.supports_gmail_labels:
-                        mail.store(num, "-X-GM-LABELS", remove_labels)
+                        label = gmail_label(remove_labels)
+                        if label:
+                            self._store(mail, num, "-X-GM-LABELS", label,
+                                        f"take the label {label} off {message_id}")
         except Exception as e:
-            self.last_archive_error = (
+            self._problem(
                 f"Could not {what} {message_id} on {self.imap_server}: {e}. "
                 f"The email is untouched and will be seen again next run."
             )
+
+    def _problem(self, text: str) -> None:
+        """Record something the mailbox would not do, keeping the earlier ones.
+
+        One line per thing that failed: a star being refused and a label being
+        refused are different problems with different answers, and overwriting
+        one with the other hides half of what happened.
+        """
+        if text not in (self.last_archive_error or ""):
+            self.last_archive_error = (
+                f"{self.last_archive_error}\n{text}".strip()
+                if self.last_archive_error else text
+            )
+
+    def _store(self, mail, num, mode: str, value: str, what: str) -> bool:
+        """One STORE. Records what happened and never raises.
+
+        imaplib raises on a BAD reply rather than returning it, so a status
+        check alone never sees the most interesting failure.
+        """
+        try:
+            status, _ = mail.store(num, mode, value)
+        except Exception as e:
+            self._problem(f"The mail server would not {what}: {e}")
+            return False
+        if status != "OK":
+            self._problem(f"The mail server refused to {what} (status {status}).")
+            return False
+        return True
 
 class OutlookProvider(GmailProvider):
     """Outlook / Office365 provider using outlook.office365.com IMAP/SMTP."""

@@ -172,7 +172,13 @@ class EmailConfig(BaseModel):
     create_drafts: bool = True
     # Mail that matters gets a star and a label, so it is easy to find.
     star_important: bool = True
-    important_label: str = "Important"
+    # NOT "Important": that is one of Gmail's own labels, and asking Gmail to
+    # put a user label of that name on a message is refused with BAD. Naming it
+    # something Gmail does not already own also keeps it obvious which label
+    # this app put there. A name that does collide is moved out of the way
+    # automatically (see gmail_label), but the shipped default should not need
+    # rescuing.
+    important_label: str = "AI/Important"
 
 class AutomationConfig(BaseModel):
     level: AutomationLevel = AutomationLevel.AUTONOMOUS
