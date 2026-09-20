@@ -14,6 +14,36 @@ HARD_SAFETY_KEYWORDS = [
     "wire transfer", "social security", "credit card", "bank login"
 ]
 
+def _reason_to_keep(analysis: EmailAnalysis) -> Optional[str]:
+    """Why this must NOT be archived, or None if filing it away is fine.
+
+    Three separate ways an email earns its place in the inbox. Before this,
+    "no reply needed" plus a routine-looking category was enough to archive
+    anything - which is how an employer saying they had read a job application
+    ended up filed with the supermarket newsletters. Category says what a
+    message IS; none of these are about that.
+    """
+    if analysis.protected_topic:
+        return (
+            f"You asked never to archive anything about "
+            f"'{analysis.protected_topic}'. Starred and left in your inbox."
+        )
+    if analysis.personally_addressed:
+        return (
+            "Written to you about something of yours, not sent to a list. "
+            "Starred and left in your inbox."
+        )
+    # The archive branch used to ignore importance completely, so a message the
+    # model itself had called high-importance was archived anyway if it needed
+    # no reply.
+    if ImportanceLevel.HIGH in (analysis.importance, analysis.urgency):
+        return (
+            f"No reply needed, but this is {analysis.importance.value} importance "
+            f"and {analysis.urgency.value} urgency. Starred and left in your inbox."
+        )
+    return None
+
+
 def evaluate_decision(
     analysis: EmailAnalysis,
     automation: AutomationConfig,
@@ -75,6 +105,9 @@ def evaluate_decision(
             EmailCategory.AUTOMATED,
             EmailCategory.SPAM,
         ):
+            keep = _reason_to_keep(analysis)
+            if keep:
+                return DecisionOption.NOTIFY_ME, keep
             return DecisionOption.ARCHIVE, "No response required for informational email. Archiving."
         else:
             return DecisionOption.IGNORE, "No response required. Ignoring."

@@ -176,6 +176,44 @@ def test_it_gives_up_eventually_rather_than_waiting_for_ever():
     assert sum(clock.slept) <= 150.0, "a pause must not become a hang"
 
 
+def test_an_overloaded_model_hands_over_to_the_next_one():
+    """His 503: "this model is currently experiencing high demand". Another
+    model on the same key answers at once, so switching beats waiting."""
+    clock = FakeClock()
+    busy = StubProvider(
+        "gemini-3.1-flash-lite",
+        AIProviderError("busy", kind="unavailable"),
+    )
+    other = StubProvider("gemini-3-flash-preview")
+    switches = []
+
+    chain = FallbackAIProvider(
+        chain_of(busy, other),
+        on_switch=lambda a, b, e: switches.append((a.label, b.label, e.kind)),
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    result = chain.classify_email(make_email("m1"))
+
+    assert result.category.value == "work"
+    assert switches == [
+        ("gemini-3.1-flash-lite", "gemini-3-flash-preview", "unavailable")
+    ]
+    assert not clock.slept, "there is nothing to wait for - just use the other one"
+
+
+def test_but_the_busy_model_is_not_written_off_for_the_run():
+    """A spike is temporary. Once its cooldown passes it is used again, so a
+    momentary 503 does not cost the good model for the whole inbox."""
+    clock = FakeClock()
+    busy_once = Flaky("gemini", AIProviderError("busy", kind="unavailable"), failures=1)
+
+    chain = FallbackAIProvider(chain_of(busy_once), sleep=clock.sleep, clock=clock)
+    chain.classify_email(make_email("m1"))
+
+    assert busy_once.calls == 2, "it comes back once the spike is over"
+
+
 # --- a provider that cannot work is not announced as the rescue -------------
 
 class NotInstalled(StubProvider):

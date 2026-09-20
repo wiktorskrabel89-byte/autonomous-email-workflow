@@ -187,6 +187,16 @@ class AutomationConfig(BaseModel):
     # without you picking it, because a wrong "fact" would then be stated to
     # real people as if it were true.
     learn_facts_from_email: bool = False
+    # Subjects you never want filed away, in your own words - "job offers and
+    # anything about my applications", "anything about my landlord". Mail that
+    # is about one of these is starred and left in the inbox instead of being
+    # archived, however routine it looks.
+    #
+    # This exists because "important to you" is not something an AI can work
+    # out from the email alone. A job-board status update is, to a model, an
+    # ordinary low-importance notification - and it was archived as one, along
+    # with the mail from an employer who had actually read an application.
+    never_archive_about: List[str] = Field(default_factory=list)
 
 class NotificationsConfig(BaseModel):
     channel: str = "terminal"

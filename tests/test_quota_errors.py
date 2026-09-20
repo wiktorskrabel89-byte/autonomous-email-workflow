@@ -10,7 +10,7 @@ These tests use the real shapes Google and Groq send back.
 
 import httpx
 import pytest
-from openai import RateLimitError
+from openai import InternalServerError, RateLimitError
 
 from email_workflow.models.config import APIConfig
 from email_workflow.providers.api_providers import OpenAICompatibleProvider
@@ -113,6 +113,71 @@ def test_insufficient_quota_by_name_is_also_final(monkeypatch):
         rate_limit_error("Error: insufficient_quota")
     )
     assert failure.kind == "quota"
+
+
+# --- an overloaded model is a failover, not the end of the run --------------
+
+# Word for word what ended his run at 21 of 145.
+HIGH_DEMAND = (
+    "This model is currently experiencing high demand. Spikes in demand are "
+    "usually temporary. Please try again later."
+)
+
+
+def busy_error(message: str = HIGH_DEMAND, status: int = 503) -> InternalServerError:
+    response = httpx.Response(
+        status, request=httpx.Request("POST", "https://example.invalid/chat")
+    )
+    return InternalServerError(
+        f"Error code: {status}",
+        response=response,
+        body={"error": {"code": status, "message": message, "status": "UNAVAILABLE"}},
+    )
+
+
+def test_a_model_under_high_demand_moves_to_the_next_one(monkeypatch):
+    """It fell through to the catch-all, which does not fail over, so one
+    overloaded model ended a 145-email run after 21."""
+    failure = provider(monkeypatch)._translate(busy_error())
+    assert failure.kind == "unavailable"
+    assert failure.can_failover, "this has to move to another model"
+    assert failure.is_transient, "and the model comes back later in the run"
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504, 529])
+def test_the_whole_5xx_family_is_treated_the_same(monkeypatch, status):
+    assert provider(monkeypatch)._translate(busy_error(status=status)).can_failover
+
+
+def test_the_message_says_it_is_the_model_not_you(monkeypatch):
+    failure = provider(monkeypatch)._translate(busy_error())
+    assert "busy" in failure.message
+    assert "high demand" in failure.message, "keep what the provider said"
+    assert "not anything you did" in failure.hint
+
+
+def test_an_overloaded_model_is_retried_once_then_handed_on(monkeypatch):
+    """Waiting is the wrong answer when another model is free: "high demand"
+    has no window to wait out, and the next model usually answers at once."""
+    ai = provider(monkeypatch)
+    waits = []
+    ai.sleep = waits.append
+    monkeypatch.setattr(ai, "_get_client", lambda: object())
+
+    tries = []
+
+    def always_busy(client, kwargs):
+        tries.append(1)
+        raise ai._translate(busy_error())
+
+    monkeypatch.setattr(ai, "_attempt", always_busy)
+
+    with pytest.raises(Exception) as failure:
+        ai._chat([{"role": "user", "content": "hi"}])
+
+    assert failure.value.kind == "unavailable"
+    assert len(tries) == 2, "one quick retry, then let the chain switch models"
+    assert waits == [5.0], "and a short wait, not a per-minute one"
 
 
 # --- and what is done about it ---------------------------------------------

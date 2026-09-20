@@ -9,7 +9,8 @@ reaches the user as a Python traceback.
 # worth failing over for. A bad request or malformed output is our fault and
 # would fail identically everywhere, so it is not in this set.
 FAILOVER_KINDS = frozenset(
-    {"quota", "rate_limit", "auth", "model_gone", "network", "no_access"}
+    {"quota", "rate_limit", "unavailable", "auth", "model_gone", "network",
+     "no_access"}
 )
 
 # Failures that pass on their own. A per-minute rate limit clears in seconds
@@ -20,7 +21,7 @@ FAILOVER_KINDS = frozenset(
 # read as "this model is finished", so one busy minute retired the model, then
 # the next one, and the chain fell through to a local Ollama that was not
 # running. A quota that is really spent (a daily allowance) is still permanent.
-TRANSIENT_KINDS = frozenset({"rate_limit", "network"})
+TRANSIENT_KINDS = frozenset({"rate_limit", "unavailable", "network"})
 
 # How long a transient failure stands a provider down for, when the server does
 # not say. Long enough for a per-minute window to roll over.

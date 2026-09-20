@@ -267,3 +267,48 @@ def test_a_file_you_never_committed_is_not_at_risk(tmp_path):
 def test_somewhere_that_is_not_a_repository_says_nothing(tmp_path):
     from email_workflow.core.updates import locally_modified
     assert locally_modified(tmp_path) == []
+
+
+# --- updating from inside the program being updated -------------------------
+
+def test_a_locked_launcher_is_not_a_failed_update():
+    """Windows locks a running .exe, and the program asking for the update IS
+    email-workflow.exe - so pip can never replace it from in there. It was
+    reported as "the new code is in place but reinstalling failed", which reads
+    like a broken update when nothing was wrong: an editable install already
+    runs the source that was just copied in.
+
+    This is his real pip output, in Polish, as Windows reported it.
+    """
+    from email_workflow.cli.cli import _only_the_launcher_was_locked
+
+    real = (
+        "ERROR: Could not install packages due to an OSError: [WinError 32] "
+        "Proces nie moze uzyskac dostepu do pliku, poniewaz jest on uzywany "
+        "przez inny proces: "
+        "'c:\\users\\wiktor\\appdata\\roaming\\python\\python312"
+        "\\scripts\\email-workflow.exe'"
+    ).replace("uzywany", "u\u017cywany")
+    assert _only_the_launcher_was_locked(real)
+
+
+def test_the_english_wording_is_recognised_too():
+    from email_workflow.cli.cli import _only_the_launcher_was_locked
+
+    assert _only_the_launcher_was_locked(
+        "[WinError 32] The process cannot access the file because it is being "
+        "used by another process: 'C:\\Python\\Scripts\\email-workflow.exe'"
+    )
+
+
+def test_a_real_install_failure_is_still_a_real_failure():
+    """Only the launcher. A missing dependency has to keep shouting."""
+    from email_workflow.cli.cli import _only_the_launcher_was_locked
+
+    assert not _only_the_launcher_was_locked(
+        "ERROR: Could not find a version that satisfies the requirement httpx"
+    )
+    assert not _only_the_launcher_was_locked(
+        "[WinError 32] used by another process: 'some_other_file.dll'"
+    )
+    assert not _only_the_launcher_was_locked("")

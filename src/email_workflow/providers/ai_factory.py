@@ -156,8 +156,11 @@ def get_ai_provider(
     a refusal that clears by itself, which is waited out rather than treated
     as the end of that provider.
     """
+    topics = tuple(getattr(config.automation, "never_archive_about", ()) or ())
+
     if config.ai.mode == AIMode.LOCAL:
         provider: AIProvider = OllamaProvider(config.ai.local)
+        provider.never_archive_about = topics
         provider.validate_setup()
         return provider
 
@@ -165,6 +168,7 @@ def get_ai_provider(
 
     if prov_name == "fake":
         provider = FakeAIProvider()
+        provider.never_archive_about = topics
         provider.validate_setup()
         return provider
 
@@ -181,13 +185,16 @@ def get_ai_provider(
             for limiter in all_limiters(link.provider):
                 limiter.on_wait = on_throttle
 
-    if on_pause:
-        # Every provider that really talks to an API, whether it sits alone,
-        # in a key pool or in the chain.
-        for link in links:
-            for leaf in leaf_providers(link.provider):
-                if hasattr(leaf, "on_server_pause"):
-                    leaf.on_server_pause = on_pause
+    # Every provider that really talks to an API, whether it sits alone, in a
+    # key pool or in the chain.
+    for link in links:
+        for leaf in leaf_providers(link.provider):
+            # The subjects this person never wants archived have to reach the
+            # prompt of whichever provider actually answers - including the
+            # one the chain falls over to.
+            leaf.never_archive_about = topics
+            if on_pause and hasattr(leaf, "on_server_pause"):
+                leaf.on_server_pause = on_pause
 
     if not links:
         meta = PROVIDER_METADATA[prov_name]

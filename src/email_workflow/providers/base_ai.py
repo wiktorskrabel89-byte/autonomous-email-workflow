@@ -55,6 +55,30 @@ action_required   = something must be DONE (pay, book, upload, decide, attend).
 response_required = the sender is waiting for a REPLY from us.
 A newsletter needs neither. A receipt usually needs neither.
 
+## Step 3b - Is this written to US, or sent to a list?
+personally_addressed = true when the email is about something OF OURS that we
+did or have: our application, our order, our booking, our ticket, our account,
+our interview. Someone on the other side acted on OUR thing.
+It is false for bulk sends - a newsletter, an offer, a digest of listings, an
+alert about opportunities that exist. Those go to thousands of people
+unchanged, and our name at the top does not make one personal.
+
+  "An employer has read your application"     -> true. It is about ours.
+  "Last chance to send a CV for this role"    -> false. An advert.
+  "Your parcel is out for delivery"           -> true.
+  "Jobs we found that you might like"         -> false. A digest.
+
+This is NOT the same question as the category. An employer replying about our
+application is a notification AND personal. Getting this wrong files a reply to
+something we did away with the supermarket newsletters, and it is never seen.
+
+## Step 3c - Subjects this person never wants filed away
+{protected_topics}
+If the email is about one of those, copy that line into protected_topic exactly
+as it is written above. If none of them fit, protected_topic is "".
+Judge the subject matter, not the wording: the list is in their words, the mail
+may be in any language.
+
 ## Step 4 - Decide, using the first rule that matches
 1. Category security, account or financial, or anything that ASKS us to pay,
    authorise, confirm or hand over: passwords, login codes, payment details,
@@ -113,6 +137,8 @@ Reply with JSON only. No prose, no markdown fence. Exactly these keys:
   "confidence": 0.0,
   "missing_information": [],
   "commitments_implied": [],
+  "personally_addressed": false,
+  "protected_topic": "",
   "recommended_decision": "ignore|archive|notify_me|create_draft|wait_for_approval|automatically_reply|escalate",
   "reasoning": "2-4 sentences: what this email wants, which Step 4 rule you applied and why, and what made you uncertain."
 }}
@@ -250,6 +276,30 @@ Reply with JSON only. No prose, no markdown fence.
 
 
 class AIProvider(ABC):
+    # Subjects this person never wants filed away, in their own words. Set by
+    # the factory from config.yaml. A tuple, not a list, so the shared default
+    # cannot be appended to by accident.
+    never_archive_about: tuple = ()
+
+    def protected_topics_block(self) -> str:
+        """The Step 3c block of the classification prompt.
+
+        Whether an email matters is not something a model can work out from the
+        email alone: a job-board status update looks like any other low
+        importance notification, which is exactly how one got archived. This is
+        the only place the person's own answer to that gets in.
+        """
+        topics = [t.strip() for t in (self.never_archive_about or ()) if t and t.strip()]
+        if not topics:
+            return (
+                "This person has not named any. Leave protected_topic empty (\"\")."
+            )
+        listed = "\n".join(f'  - "{topic}"' for topic in topics)
+        return (
+            "They asked that mail about any of these is never filed away:\n"
+            f"{listed}"
+        )
+
     def describe(self) -> tuple:
         """(provider, model) that would actually handle the next call.
 

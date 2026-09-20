@@ -7,6 +7,7 @@ from pydantic import BaseModel, ValidationError
 from openai import (
     OpenAI,
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
     AuthenticationError,
     BadRequestError,
@@ -87,6 +88,15 @@ MAX_RATE_LIMIT_WAIT = 90.0
 # When the server refuses without saying how long to wait. Gemini's window is
 # a rolling minute, so this is long enough to clear most of one.
 DEFAULT_RATE_LIMIT_WAIT = 20.0
+
+# A model that is overloaded (HTTP 5xx). Unlike a per-minute limit, waiting is
+# the WORSE answer here: another model on the same key will usually answer
+# immediately, and "high demand" has no published window to wait out. So it
+# gets one quick retry in case the spike was momentary, then the chain moves
+# to the next model.
+_BUSY_STATUSES = frozenset({500, 502, 503, 504, 529})
+BUSY_RETRIES = 1
+BUSY_WAIT = 5.0
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
@@ -347,6 +357,23 @@ class OpenAICompatibleProvider(AIProvider):
                 hint="Check your internet connection and try again.",
                 kind="network",
             )
+        # 503 "this model is currently experiencing high demand", and the rest
+        # of the 5xx family. Nothing is wrong with the request, the key or the
+        # quota - that model is busy this minute. It has to be a failover:
+        # another model on the same key will usually answer at once. Falling
+        # through to the generic case below made it kind="other", which does
+        # not fail over, so one busy model ended the whole run.
+        if isinstance(e, APIStatusError) and e.status_code in _BUSY_STATUSES:
+            detail = self._provider_message(e)
+            return AIProviderError(
+                f"{self.provider_name} says '{model}' is busy right now "
+                f"(HTTP {e.status_code})."
+                + (f"\n\n{self.provider_name} says: {detail}" if detail else ""),
+                hint="This is the model being overloaded, not anything you did. "
+                "It moves to the next model in the chain and carries on.",
+                kind="unavailable",
+                retry_after=self._retry_after_seconds(e),
+            )
         if isinstance(e, BadRequestError):
             return AIProviderError(
                 f"{self.provider_name} rejected the request for '{model}': {e}",
@@ -429,7 +456,9 @@ class OpenAICompatibleProvider(AIProvider):
             kwargs["response_format"] = {"type": "json_object"}
 
         headers = None
-        for attempt in range(RATE_LIMIT_RETRIES + 1):
+        tries = {"rate_limit": RATE_LIMIT_RETRIES, "unavailable": BUSY_RETRIES}
+        used = {"rate_limit": 0, "unavailable": 0}
+        while True:
             try:
                 response, headers = self._attempt(client, kwargs)
                 break
@@ -439,12 +468,20 @@ class OpenAICompatibleProvider(AIProvider):
                 # provider is finished" is what walked the chain down, one
                 # model at a time, to a local Ollama that was not running - and
                 # ended the run halfway through the inbox.
-                if failure.kind != "rate_limit" or attempt == RATE_LIMIT_RETRIES:
+                #
+                # An overloaded model gets ONE quick retry and is then handed
+                # on: waiting is the wrong answer when another model is free.
+                left = tries.get(failure.kind, 0) - used.get(failure.kind, 0)
+                if left <= 0:
                     raise
-                delay = min(
-                    failure.retry_after or DEFAULT_RATE_LIMIT_WAIT,
-                    MAX_RATE_LIMIT_WAIT,
-                )
+                used[failure.kind] += 1
+                if failure.kind == "unavailable":
+                    delay = min(failure.retry_after or BUSY_WAIT, MAX_RATE_LIMIT_WAIT)
+                else:
+                    delay = min(
+                        failure.retry_after or DEFAULT_RATE_LIMIT_WAIT,
+                        MAX_RATE_LIMIT_WAIT,
+                    )
                 if self.on_server_pause:
                     try:
                         self.on_server_pause(delay, f"{self.provider_name} / {self.config.model}")
@@ -542,6 +579,7 @@ class OpenAICompatibleProvider(AIProvider):
             body=message.body,
             thread_context=self._format_thread(thread, "No earlier messages in this thread."),
             known_facts=known_facts or "None provided.",
+            protected_topics=self.protected_topics_block(),
         )
         verdict = self._call_model_with_json_retry(prompt, ClassificationVerdict)
 

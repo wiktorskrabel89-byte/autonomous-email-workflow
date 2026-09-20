@@ -27,6 +27,16 @@ class ClassificationVerdict(BaseModel):
     commitments_implied: List[str] = Field(default_factory=list)
     recommended_decision: DecisionOption
     reasoning: str
+    # Written TO this person about something of theirs - their application,
+    # their order, their ticket - rather than sent to a mailing list. It is a
+    # different question from the category: "an employer has read your
+    # application" is a notification AND personal, and filing that away with
+    # the newsletters is how a reply to something you did gets lost.
+    # Defaults false so an older model that omits it changes nothing.
+    personally_addressed: bool = False
+    # Which of the user's own never-archive topics this is about, copied
+    # verbatim from the list it was given. Empty when none of them fit.
+    protected_topic: str = ""
 
 class EmailAnalysis(BaseModel):
     message_id: str
@@ -46,6 +56,8 @@ class EmailAnalysis(BaseModel):
     commitments_implied: List[str] = Field(default_factory=list)
     recommended_decision: DecisionOption
     reasoning: str
+    personally_addressed: bool = False
+    protected_topic: str = ""
 
 class DecisionSupportOutput(BaseModel):
     missing_information: List[str] = Field(default_factory=list)

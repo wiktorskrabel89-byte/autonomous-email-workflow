@@ -12,7 +12,7 @@ from typing import Optional
 from datetime import datetime, time as dtime, timedelta
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
+from rich.table import Column, Table
 from rich.prompt import Prompt, Confirm
 from rich.progress import (
     BarColumn,
@@ -853,6 +853,7 @@ def _announce_switch(from_link, to_link, error) -> None:
     """Tell the user, mid-run, that the chain moved to another provider."""
     why = {
         "rate_limit": "busy right now",
+        "unavailable": "overloaded right now",
         "quota": "out of free quota",
         "auth": "key rejected",
         "model_gone": "model no longer served",
@@ -868,8 +869,52 @@ def _announce_switch(from_link, to_link, error) -> None:
 MAX_PARALLEL_WORKERS = 8
 
 
+# Characters that make a line's width unpredictable. An emoji-presentation
+# sequence - a plain symbol followed by U+FE0F - is measured as ONE cell by
+# rich and drawn as TWO by the terminal, and one cell of disagreement is all it
+# takes: the progress line then runs one column past the edge, wraps, and a
+# wrapped line cannot be overwritten in place. The bar reprints itself instead,
+# twelve times a second, for as long as that email takes.
+#
+# That is the "ferie spam": the subject "Otwieramy rezerwacje na ferie! [skier]"
+# ends in U+26F7 U+FE0F, and it printed a few hundred copies of the bar.
+# Emoji that terminals and rich agree on (rocket, eyes) were never a problem.
+_UNMEASURABLE = (
+    "️"        # emoji presentation selector - the actual culprit
+    "︎"        # text presentation selector
+    "‍"        # zero-width joiner, for multi-part emoji
+    "⃣"        # combining enclosing keycap
+)
+# Symbols that gain emoji width from the selector above. Dropping the selector
+# alone would leave these behind at the width rich expects, but a terminal may
+# still draw some of them wide, so they go too.
+_AMBIGUOUS_WIDTH = [
+    (0x2190, 0x2BFF),   # arrows, misc symbols, dingbats - where U+26F7 lives
+    (0xFE00, 0xFE0F),
+    (0x1F3FB, 0x1F3FF), # skin tone modifiers
+]
+
+
+def _one_line(text: str) -> str:
+    """Text safe to put in a bar that redraws itself in place.
+
+    Anything whose printed width we cannot predict is removed rather than
+    guessed at, and newlines are flattened: a subject line is arbitrary text
+    from a stranger, and this one goes into a live-redrawing bar.
+    """
+    out = []
+    for ch in text:
+        if ch in _UNMEASURABLE:
+            continue
+        code = ord(ch)
+        if any(lo <= code <= hi for lo, hi in _AMBIGUOUS_WIDTH):
+            continue
+        out.append(" " if ch in "\r\n\t" else ch)
+    return " ".join("".join(out).split())
+
+
 def _short(subject: str, width: int = 55) -> str:
-    subject = (subject or "(no subject)").strip()
+    subject = _one_line(subject or "").strip() or "(no subject)"
     return subject if len(subject) <= width else subject[: width - 3] + "..."
 
 
@@ -897,7 +942,13 @@ def _progress(unit_note=""):
     """
     return Progress(
         SpinnerColumn(),
-        TextColumn("[bold cyan]{task.description}"),
+        # no_wrap + ellipsis as a second line of defence: if anything still
+        # measures wider than expected, it is cut off rather than wrapped onto
+        # a second line the bar can never overwrite.
+        TextColumn(
+            "[bold cyan]{task.description}",
+            table_column=Column(no_wrap=True, overflow="ellipsis"),
+        ),
         BarColumn(bar_width=None, complete_style="green", finished_style="green"),
         MofNCompleteColumn(),
         TextColumn(unit_note) if unit_note else TextColumn(""),
@@ -1978,6 +2029,32 @@ def facts():
         console.print()
 
 
+def _read_text(path) -> str:
+    """A file's contents, or "" if it is not there. Never raises."""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def _only_the_launcher_was_locked(output: str) -> bool:
+    """Whether pip's only complaint was that it could not replace our own .exe.
+
+    Windows locks a running executable, and the program asking for the update
+    IS email-workflow.exe - so pip can never replace it from in here. Nothing
+    is actually wrong: an editable install runs from the source that was just
+    copied in, and the launcher only needs rewriting if the entry points moved.
+    """
+    text = (output or "").lower()
+    locked = (
+        "winerror 32" in text
+        or "used by another process" in text
+        # Windows reports this in the user's own language.
+        or "używany przez inny proces" in text
+    )
+    return locked and "email-workflow.exe" in text
+
+
 def _shell(argv, cwd=None, stdin_text=None, interactive=False):
     """Run one external command. Returns (ok, output).
 
@@ -2602,6 +2679,9 @@ def update(
         # The workflow file is code and gets replaced, but the hour inside
         # it is a choice somebody made. Put it back afterwards.
         your_cron = keep_your_schedule(project_root)
+        # Read before anything is replaced, so "did the dependencies change?"
+        # can be answered afterwards without guessing.
+        deps_before = _read_text(project_root / "pyproject.toml")
         with _progress() as bar:
             todo = files_to_copy(new_tree)
             job = bar.add_task("replacing files", total=len(todo))
@@ -2619,18 +2699,33 @@ def update(
         write_state(project_root, head, source)
         console.print(f"[dim]replaced {copied} file(s)[/dim]")
 
-        # Dependencies can change with the code, and an app that imports
-        # nothing is worse than an out-of-date one.
-        with console.status("[cyan]reinstalling...", spinner="dots"):
-            ok, out = _shell([sys.executable, "-m", "pip", "install", "-e", ".",
-                              "--quiet"], cwd=project_root)
-        if not ok:
-            console.print(Panel(
-                f"[bold yellow]The new code is in place but reinstalling "
-                f"failed.[/bold yellow]\n\n{out.strip()[:300]}\n\n"
-                f"Run this yourself:\n\n    pip install -e .",
-                border_style="yellow",
-            ))
+        # Only when the dependency list itself changed. This is an editable
+        # install: the code that was just copied in IS the code that runs, so
+        # a reinstall buys nothing unless pyproject.toml moved - and on Windows
+        # it actively fails, because pip tries to rewrite email-workflow.exe
+        # while that exe is the program asking for the update. That failure was
+        # reported as "the new code is in place but reinstalling failed",
+        # which reads like a broken update when nothing was wrong at all.
+        if deps_before != _read_text(project_root / "pyproject.toml"):
+            with console.status("[cyan]new dependencies, installing...",
+                                spinner="dots"):
+                ok, out = _shell([sys.executable, "-m", "pip", "install", "-e",
+                                  ".", "--quiet"], cwd=project_root)
+            if not ok and _only_the_launcher_was_locked(out):
+                console.print(
+                    "[dim]The launcher could not be rewritten because it is "
+                    "the program you are running. It did not need "
+                    "rewriting.[/dim]"
+                )
+            elif not ok:
+                console.print(Panel(
+                    f"[bold yellow]The new code is in place but its "
+                    f"dependencies could not be installed.[/bold yellow]\n\n"
+                    f"{out.strip()[:300]}\n\n"
+                    f"Close the app and run this yourself:\n\n"
+                    f"    pip install -e .",
+                    border_style="yellow",
+                ))
 
         # Does it actually start? Better to find out here than at 7am.
         ok, out = _shell([sys.executable, "-c",

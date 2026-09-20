@@ -120,6 +120,7 @@ class OllamaProvider(AIProvider):
             body=message.body,
             thread_context=thread_context,
             known_facts=known_facts or "None provided.",
+            protected_topics=self.protected_topics_block(),
         )
         res_dict = self._generate_json(prompt)
         verdict = ClassificationVerdict.model_validate(res_dict)

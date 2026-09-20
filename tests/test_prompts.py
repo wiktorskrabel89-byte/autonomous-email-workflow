@@ -144,6 +144,7 @@ def test_classification_prompt_declares_every_placeholder_the_caller_passes(emai
     supplied = {
         "subject", "sender_name", "sender_email", "known_contact",
         "received_at", "body", "thread_context", "known_facts",
+        "protected_topics",
     }
     assert placeholders(CLASSIFICATION_PROMPT_TEMPLATE) == supplied
 
