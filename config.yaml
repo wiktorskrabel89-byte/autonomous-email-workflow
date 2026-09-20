@@ -1,75 +1,77 @@
 ai:
+  mode: api
   api:
-    api_key_env: GEMINI_API_KEY
-    max_output_tokens: 4000
-    model: gemini-3.1-flash-lite
     provider: gemini
+    model: gemini-3.1-flash-lite
+    api_key_env: GEMINI_API_KEY
+    temperature: 0.1
+    max_output_tokens: 4000
     requests_per_minute: 15
+  local:
+    runtime: ollama
+    model: llama3.2
+    endpoint: http://localhost:11434
     temperature: 0.1
   fallback:
+    enabled: true
     auto_detect: true
+    use_local_last: true
+    chain:
+    - provider: gemini
+      model: gemini-3-flash-preview
+      api_key_env: null
     auto_order:
     - gemini
     - groq
     - openai
     - openrouter
-    chain:
-    - api_key_env: null
-      model: gemini-3-flash-preview
-      provider: gemini
-    enabled: true
-    use_local_last: true
   keys:
     auto_detect: true
     extra: {}
-    max_workers: 0
     parallel: true
+    max_workers: 0
     review: true
-  local:
-    endpoint: http://localhost:11434
-    model: llama3.2
-    runtime: ollama
-    temperature: 0.1
-  mode: api
   usage:
-    limits: {}
     store: usage.jsonl
     warn_at_percent: 80
+    limits: {}
+email:
+  provider: gmail
+  account_ref: wiktorskrabel89@gmail.com
+  mailbox: INBOX
+  sync_mode: poll
+  poll_interval_seconds: 60
+  max_age_days: 7
+  max_emails_per_run: 0
+  allow_send: true
+  archive_unimportant: true
+  create_drafts: true
+  star_important: true
+  important_label: AI/Important
 automation:
-  autonomous_rules: []
-  confidence_threshold_auto_reply: 0.9
-  confidence_threshold_draft: 0.6
-  learn_facts_from_email: false
   level: autonomous
   trusted_categories:
   - newsletter
   - receipt
   - notification
   - work
-email:
-  account_ref: skrabelmichal@gmail.com
-  allow_send: false
-  archive_unimportant: true
-  create_drafts: false
-  important_label: Important
-  mailbox: INBOX
-  max_age_days: 7
-  max_emails_per_run: 0
-  poll_interval_seconds: 60
-  provider: gmail
-  star_important: true
-  sync_mode: poll
+  autonomous_rules: []
+  confidence_threshold_auto_reply: 0.9
+  confidence_threshold_draft: 0.6
+  learn_facts_from_email: true
+  never_archive_about:
+  - job offers, recruitment, and anything about my job applications
 notifications:
   channel: discord
   digest_mode: immediate
   show_message_breakdown: false
-security:
-  max_login_attempts: 3
-  require_login: true
-  show_password_while_typing: true
-  store: auth.json
 state:
   store: state.json
+security:
+  require_login: true
+  max_login_attempts: 3
+  store: auth.json
+  show_password_while_typing: true
 update:
-  check_automatically: true
   source: ''
+  check_automatically: true

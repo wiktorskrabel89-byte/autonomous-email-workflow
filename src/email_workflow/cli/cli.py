@@ -2256,6 +2256,27 @@ def _github_account(project_root):
     return who.strip().splitlines()[0].strip() if ok and who.strip() else ""
 
 
+def repo_from_remote_url(url: str) -> str:
+    """OWNER/REPO out of a git remote URL, or "" if it is not a GitHub one.
+
+    Worked out here rather than asked of gh, because gh answers "multiple
+    remotes detected, please specify which repo" as soon as a folder has more
+    than one remote - and a second remote is a perfectly ordinary thing to
+    have. Every gh command below is then told exactly which repository it is
+    talking about, so none of them has to guess.
+    """
+    url = (url or "").strip().splitlines()[0].strip() if (url or "").strip() else ""
+    if not url or "github.com" not in url:
+        return ""
+    # git@github.com:OWNER/REPO.git and https://github.com/OWNER/REPO.git
+    tail = url.split("github.com", 1)[1].lstrip(":/")
+    tail = tail.split("#", 1)[0].split("?", 1)[0]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    parts = [part for part in tail.strip("/").split("/") if part]
+    return "/".join(parts[:2]) if len(parts) >= 2 else ""
+
+
 def _existing_github_repo(project_root):
     """The repo this folder already pushes to, or "" if there is none.
 
@@ -2267,9 +2288,29 @@ def _existing_github_repo(project_root):
     ok, url = _shell(["git", "remote", "get-url", "origin"], cwd=project_root)
     if not ok or "github.com" not in url:
         return ""
+    # origin is the one this folder pushes to. Ask gh only if the URL cannot
+    # be read, and even then name the repo so it never has to pick a remote.
+    name = repo_from_remote_url(url)
+    if name:
+        return name
     ok, name = _shell(["gh", "repo", "view", "--json", "nameWithOwner",
                        "-q", ".nameWithOwner"], cwd=project_root)
     return name.strip().splitlines()[0].strip() if ok and name.strip() else ""
+
+
+def _gh(argv, full_name, **kwargs):
+    """A gh command aimed at one specific repository.
+
+    Without --repo, gh works out the repository from the remotes, and refuses
+    outright when there is more than one: "multiple remotes detected". That
+    turned into six keys silently not uploading and a run schedule with no
+    secrets behind it. The earlier bug was the opposite - passing a BARE repo
+    name where gh wanted OWNER/REPO - so this only ever passes a name with an
+    owner in it.
+    """
+    if full_name and "/" in full_name:
+        argv = argv + ["--repo", full_name]
+    return _shell(argv, **kwargs)
 
 
 def _write_cron_and_push(project_root, cron, hour, minute, full_name):
@@ -2305,13 +2346,16 @@ def _write_cron_and_push(project_root, cron, hour, minute, full_name):
 
 def _upload_secrets(project_root, secrets, full_name):
     """Each value on stdin, so it never appears in a command line other
-    processes on this machine can read. No --repo: inside the repository gh
-    reads it from the remote, and a bare folder name is not the OWNER/REPO it
-    expects - which is what silently lost every secret the first time."""
+    processes on this machine can read.
+
+    Aimed at one named repository. Letting gh work it out from the remotes
+    fails the moment a folder has a second remote - "multiple remotes
+    detected" - and every key then fails to upload at once.
+    """
     sent, failed = 0, []
     for name, value in sorted(secrets.items()):
-        ok, out = _shell(["gh", "secret", "set", name],
-                         cwd=project_root, stdin_text=value)
+        ok, out = _gh(["gh", "secret", "set", name], full_name,
+                      cwd=project_root, stdin_text=value)
         if ok:
             sent += 1
         else:
@@ -2319,10 +2363,35 @@ def _upload_secrets(project_root, secrets, full_name):
             console.print(f"[yellow]could not set {name}: {out.strip()[:120]}[/yellow]")
 
     if failed:
-        listed = "\n  ".join(failed)
+        # A failed upload does not mean there is nothing there. Keys uploaded
+        # on an earlier day are still set, and the scheduled run still has
+        # them - saying "this is NOT working yet" over the top of a schedule
+        # that works is its own kind of wrong.
+        already = _secrets_already_there(project_root, full_name)
+        covered = [name for name in failed if name in already]
+        missing = [name for name in failed if name not in already]
+
+        if not missing:
+            console.print(Panel(
+                f"[bold yellow]Could not re-upload {len(failed)} key(s), but "
+                f"every one of them is already set on GitHub from "
+                f"before.[/bold yellow]\n\n  "
+                + "\n  ".join(f"{name}  [dim](already there)[/dim]" for name in covered)
+                + f"\n\nThe scheduled run has its keys, so it still works. Only "
+                f"re-upload them if you have changed one since.",
+                title="Nothing to fix",
+                border_style="yellow",
+            ))
+            return True
+
+        listed = "\n  ".join(
+            f"{name}" + ("  [dim](already there from before)[/dim]"
+                         if name in already else "")
+            for name in failed
+        )
         console.print(Panel(
-            f"[bold red]{len(failed)} of {len(secrets)} keys did not upload, so "
-            f"this is NOT working yet.[/bold red]\n\n  {listed}\n\n"
+            f"[bold red]{len(missing)} of {len(secrets)} keys are not on "
+            f"GitHub, so this is NOT working yet.[/bold red]\n\n  {listed}\n\n"
             f"A run without its keys fails on the first email.\n\n"
             f"Add them here:\n"
             f"  https://github.com/{full_name}/settings/secrets/actions",
@@ -2332,6 +2401,25 @@ def _upload_secrets(project_root, secrets, full_name):
         return False
     console.print(f"[dim]uploaded all {sent} keys[/dim]")
     return True
+
+
+def _secrets_already_there(project_root, full_name) -> set:
+    """The names of the secrets this repository already has.
+
+    Names only - GitHub never gives a secret's value back, to anyone. Used to
+    tell "the upload failed and there is nothing there" apart from "the upload
+    failed and it was already set", which are very different situations for
+    somebody whose daily run is either working or not.
+    """
+    ok, out = _gh(["gh", "secret", "list"], full_name, cwd=project_root)
+    if not ok or not out.strip():
+        return set()
+    names = set()
+    for line in out.splitlines():
+        first = line.split("\t")[0].split()[0].strip() if line.strip() else ""
+        if first:
+            names.add(first)
+    return names
 
 
 def _ask_time(default="07:30"):
@@ -2397,8 +2485,8 @@ def _github_menu(project_root, full_name, wf_path, preset=None):
 
         elif choice == "2":
             console.print("[dim]asking GitHub to run it now...[/dim]")
-            ok, out = _shell(["gh", "workflow", "run", "Email workflow"],
-                             cwd=project_root)
+            ok, out = _gh(["gh", "workflow", "run", "Email workflow"],
+                          full_name, cwd=project_root)
             if ok:
                 console.print(Panel(
                     "[bold green]Started.[/bold green] It takes about a minute.\n\n"
@@ -2417,10 +2505,10 @@ def _github_menu(project_root, full_name, wf_path, preset=None):
         elif choice == "3":
             # JSON rather than gh's --template: a Go template renders the run
             # id as 3.5449167057e+10, which is not an id anyone can paste.
-            ok, out = _shell(
+            ok, out = _gh(
                 ["gh", "run", "list", "--limit", "10",
                  "--json", "status,conclusion,createdAt,databaseId"],
-                cwd=project_root,
+                full_name, cwd=project_root,
             )
             try:
                 runs = json.loads(out) if ok and out.strip() else []
