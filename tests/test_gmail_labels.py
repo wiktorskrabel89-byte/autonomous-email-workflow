@@ -167,7 +167,9 @@ def test_nothing_is_reported_when_it_all_worked():
     assert provider.last_archive_error == ""
 
 
-def test_starring_can_still_be_switched_off():
-    provider = gmail(star_important=False)
-    provider.flag_email("<m1@x>")
-    assert stored() == [] if FakeIMAP.instances else True
+def test_starring_off_still_labels_it():
+    """Stars off means "use the label instead", not "stop marking it"."""
+    gmail(star_important=False, important_label="Priorytet").flag_email("<m1@x>")
+    modes = [mode for _, mode, _ in stored()]
+    assert "+FLAGS" not in modes
+    assert "+X-GM-LABELS" in modes

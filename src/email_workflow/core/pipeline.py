@@ -31,6 +31,13 @@ def _label_to_apply(analysis, config) -> str:
     return ""
 
 
+def _label_is_kept(label: str, config) -> bool:
+    """Whether mail filed under this label stays in the inbox."""
+    for item in getattr(config.email, "labels", ()) or ():
+        if item.name == label:
+            return bool(getattr(item, "keep_in_inbox", False))
+    return False
+
 class WorkflowPipeline:
     def __init__(
         self,
@@ -191,9 +198,14 @@ class WorkflowPipeline:
 
         self.idempotency.update_stage(email.message_id, email.thread_id, ProcessingStage.ANALYZED)
 
+        # Which of your labels this belongs under, worked out before the
+        # decision so a label marked "keep in my inbox" can settle it.
+        filed_under = _label_to_apply(analysis, self.config)
+
         # 5. Deterministic Safety & Automation Decision
         decision, decision_reason = evaluate_decision(
-            analysis, self.config.automation, email.subject, email.body
+            analysis, self.config.automation, email.subject, email.body,
+            kept_label=filed_under if _label_is_kept(filed_under, self.config) else "",
         )
 
         run_meta["decision"] = decision.value
@@ -216,7 +228,6 @@ class WorkflowPipeline:
         # Rabaty" work - the mail leaves the inbox and is still somewhere you
         # can find it, rather than disappearing into All Mail with everything
         # else.
-        filed_under = _label_to_apply(analysis, self.config)
         if filed_under:
             self.email.apply_label(email.message_id, filed_under)
             self.audit.log_event(

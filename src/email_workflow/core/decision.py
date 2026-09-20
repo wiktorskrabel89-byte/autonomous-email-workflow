@@ -14,7 +14,7 @@ HARD_SAFETY_KEYWORDS = [
     "wire transfer", "social security", "credit card", "bank login"
 ]
 
-def _reason_to_keep(analysis: EmailAnalysis) -> Optional[str]:
+def _reason_to_keep(analysis: EmailAnalysis, kept_label: str = "") -> Optional[str]:
     """Why this must NOT be archived, or None if filing it away is fine.
 
     Three separate ways an email earns its place in the inbox. Before this,
@@ -23,6 +23,11 @@ def _reason_to_keep(analysis: EmailAnalysis) -> Optional[str]:
     ended up filed with the supermarket newsletters. Category says what a
     message IS; none of these are about that.
     """
+    if kept_label:
+        return (
+            f"Filed under '{kept_label}', which you asked to keep in your "
+            f"inbox. Left where you will see it."
+        )
     if analysis.protected_topic:
         return (
             f"You asked never to archive anything about "
@@ -49,6 +54,7 @@ def evaluate_decision(
     automation: AutomationConfig,
     subject: str = "",
     body: str = "",
+    kept_label: str = "",
 ) -> Tuple[DecisionOption, str]:
     """
     Deterministic 4-step decision engine.
@@ -105,7 +111,7 @@ def evaluate_decision(
             EmailCategory.AUTOMATED,
             EmailCategory.SPAM,
         ):
-            keep = _reason_to_keep(analysis)
+            keep = _reason_to_keep(analysis, kept_label)
             if keep:
                 return DecisionOption.NOTIFY_ME, keep
             return DecisionOption.ARCHIVE, "No response required for informational email. Archiving."

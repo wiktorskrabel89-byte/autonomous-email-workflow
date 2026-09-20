@@ -152,6 +152,15 @@ class EmailLabel(BaseModel):
 
     name: str
     about: str = ""
+    # Mail filed here stays in your inbox instead of being archived.
+    #
+    # Deterministic on purpose. Asking the AI a SECOND question - "is this one
+    # of the subjects he never wants archived?" - gave a different answer once
+    # the prompt also had labels in it: a job advert was filed under
+    # Newslettery and archived, when the same mail had been kept the day
+    # before. One question ("which label?") and one rule ("this label is
+    # kept") cannot disagree with each other.
+    keep_in_inbox: bool = False
 
 class EmailConfig(BaseModel):
     provider: str = "mock"

@@ -154,3 +154,49 @@ def test_the_subject_is_what_is_shown_not_the_message_id():
         [{"filed_under": "Rabaty", "analysis": analysis(subject="-10% Modivo")}]
     )
     assert grouped["Rabaty"] == ["-10% Modivo"]
+
+
+# --- a label can say "and keep these in my inbox" ---------------------------
+
+def kept_config():
+    config = AppConfig()
+    config.email.labels = [
+        EmailLabel(name="Praca", about="job mail", keep_in_inbox=True),
+        EmailLabel(name="Rabaty", about="discounts", keep_in_inbox=False),
+    ]
+    return config
+
+
+def test_a_kept_label_is_not_archived():
+    """Deterministic on purpose. Asking the AI a SECOND question - "is this a
+    subject he never wants archived?" - answered differently once the prompt
+    also had labels in it: a job advert was filed under Newslettery and
+    archived, when the same mail had been kept the day before. One question
+    and one rule cannot disagree with each other.
+    """
+    from email_workflow.core.decision import evaluate_decision
+    from email_workflow.models.email import DecisionOption
+
+    decision, reason = evaluate_decision(
+        analysis(), kept_config().automation, kept_label="Praca",
+    )
+    assert decision == DecisionOption.NOTIFY_ME
+    assert "Praca" in reason
+
+
+def test_a_label_not_marked_kept_is_still_archived():
+    from email_workflow.core.decision import evaluate_decision
+    from email_workflow.models.email import DecisionOption
+
+    decision, _ = evaluate_decision(analysis(), kept_config().automation, kept_label="")
+    assert decision == DecisionOption.ARCHIVE
+
+
+def test_which_labels_are_kept_is_read_from_your_config():
+    from email_workflow.core.pipeline import _label_is_kept
+
+    config = kept_config()
+    assert _label_is_kept("Praca", config) is True
+    assert _label_is_kept("Rabaty", config) is False
+    assert _label_is_kept("Nonsense", config) is False
+    assert _label_is_kept("", config) is False

@@ -641,14 +641,21 @@ class GmailProvider(EmailProvider):
         escalated. \\Flagged is what Gmail shows as a star, and Gmail creates a
         label the first time one is applied, so no setup is needed.
         """
-        if not self.config.star_important:
+        label = label or self.config.important_label
+        # The star and the label are two separate choices. They used to be one:
+        # switching stars off also stopped the label going on, so mail that
+        # needed a person got no mark of any kind and was indistinguishable
+        # from everything else in the inbox. Turning stars off should mean "use
+        # the label instead", not "stop marking it at all".
+        star = "\\Flagged" if self.config.star_important else None
+        if not star and not label:
             return
 
         self._mark(
             message_id,
-            add_flags="\\Flagged",
-            add_labels=label or self.config.important_label,
-            what="star",
+            add_flags=star,
+            add_labels=label,
+            what="star" if star else f"file under {label}",
         )
 
     def _find(self, mail, message_id: str):

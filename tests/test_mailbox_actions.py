@@ -249,9 +249,23 @@ def test_an_explicit_label_wins():
     assert "Money" in labels[0]
 
 
-def test_starring_can_be_switched_off():
-    gmail(star_important=False).flag_email("<m1@x>")
-    assert not FakeIMAP.instances, "nothing should have been touched"
+def test_starring_off_means_no_star_but_still_a_label():
+    """His choice: "not star the emails anymore, just place them into labels".
+
+    The two used to be one call, so switching stars off also stopped the label
+    - and mail that needed a person then carried no mark at all and was
+    indistinguishable from everything else in the inbox.
+    """
+    gmail(star_important=False, important_label="Priorytet").flag_email("<m1@x>")
+
+    modes = [mode for _, mode, _ in what_was_stored()]
+    assert "+FLAGS" not in modes, "no star was asked for"
+    assert "+X-GM-LABELS" in modes, "but it still has to be findable"
+
+
+def test_with_no_star_and_no_label_nothing_is_touched():
+    gmail(star_important=False, important_label="").flag_email("<m1@x>")
+    assert not FakeIMAP.instances, "nothing was asked for, so nothing is done"
 
 
 # --- servers that are not Gmail ---------------------------------------------
