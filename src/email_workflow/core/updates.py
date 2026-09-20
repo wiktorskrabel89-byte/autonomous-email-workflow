@@ -115,6 +115,24 @@ def fetch_upstream(url: str, into: Path, timeout: int = 300) -> Tuple[bool, str]
     return ok, out
 
 
+def same_content(source: Path, target: Path) -> bool:
+    """Whether two files say the same thing, ignoring line endings.
+
+    Git hands out files with LF and checks them out on Windows with CRLF, so a
+    byte comparison calls every text file different on a Windows machine. That
+    is why an update could announce "1 file(s) would be replaced" for a file
+    nobody had touched, and why it would happily rewrite files that already
+    matched.
+    """
+    try:
+        a, b = source.read_bytes(), target.read_bytes()
+    except OSError:
+        return False
+    if a == b:
+        return True
+    return a.replace(b"\r\n", b"\n") == b.replace(b"\r\n", b"\n")
+
+
 def changed_files(new_tree: Path, project_root: Path) -> List[str]:
     """Which files an update would actually change, protected ones excluded.
 
@@ -134,10 +152,7 @@ def changed_files(new_tree: Path, project_root: Path) -> List[str]:
         if not target.exists():
             changed.append(relative.as_posix() + "  (new)")
             continue
-        try:
-            if source.read_bytes() != target.read_bytes():
-                changed.append(relative.as_posix())
-        except OSError:
+        if not same_content(source, target):
             changed.append(relative.as_posix())
     return changed
 

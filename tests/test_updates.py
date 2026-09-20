@@ -373,3 +373,40 @@ def test_your_settings_are_never_overwritten_by_that(tmp_path, monkeypatch):
                         lambda p: tmp_path / str(p))
 
     assert config_module.AppConfig.load_from_file("config.yaml").email.provider == "gmail"
+
+
+# --- an update that has nothing to do must say so ---------------------------
+
+def test_windows_line_endings_are_not_a_change(tmp_path):
+    """Git hands out files with LF and checks them out on Windows with CRLF,
+    so a byte comparison calls every text file different on a Windows machine.
+    That is why an update announced "1 file(s) would be replaced" for a file
+    nobody had touched - and why it would rewrite files that already matched.
+    """
+    from email_workflow.core.updates import same_content
+
+    (tmp_path / "lf").write_bytes(b"one\ntwo\n")
+    (tmp_path / "crlf").write_bytes(b"one\r\ntwo\r\n")
+    (tmp_path / "other").write_bytes(b"one\nCHANGED\n")
+
+    assert same_content(tmp_path / "lf", tmp_path / "crlf")
+    assert not same_content(tmp_path / "lf", tmp_path / "other")
+
+
+def test_a_file_that_only_differs_by_line_endings_is_not_listed(project, upstream):
+    from email_workflow.core.updates import changed_files
+
+    (upstream / "README.md").write_bytes(b"same text\nsecond line\n")
+    (project / "README.md").write_bytes(b"same text\r\nsecond line\r\n")
+
+    assert not any("README.md" in line for line in changed_files(upstream, project)), (
+        "nobody changed that file; saying otherwise makes every update look real"
+    )
+
+
+def test_a_real_change_is_still_listed(project, upstream):
+    from email_workflow.core.updates import changed_files
+
+    (upstream / "README.md").write_bytes(b"new text\r\n")
+    (project / "README.md").write_bytes(b"old text\r\n")
+    assert any("README.md" in line for line in changed_files(upstream, project))
