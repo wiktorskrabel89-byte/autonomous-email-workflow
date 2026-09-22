@@ -53,12 +53,6 @@ PROVIDER_METADATA = {
         "env_var": "GEMINI_API_KEY",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "keys_url": "https://aistudio.google.com/apikey",
-        # Every Google AI Studio key starts with this. A token from somewhere
-        # else in Google - the Antigravity IDE hands out "AQ." ones - is not an
-        # API key and Google answers "invalid authentication credentials",
-        # which reads as "my key stopped working" rather than "that was never
-        # a key".
-        "key_looks_like": "AIza",
         # The free tier's workhorse: the cheapest Gemini per request, so the
         # daily allowance stretches furthest over a full inbox.
         "default_model": "gemini-3.1-flash-lite",
@@ -69,8 +63,6 @@ PROVIDER_METADATA = {
         "base_url": "https://api.groq.com/openai/v1",
         "keys_url": "https://console.groq.com/keys",
         "default_model": "qwen/qwen3.8-27b",
-        # A Gemini key is "AIza" and 39 characters; a Groq key is "gsk_".
-        "key_looks_like": "gsk_",
     },
     "openrouter": {
         "name": "OpenRouter",
@@ -259,26 +251,24 @@ class OpenAICompatibleProvider(AIProvider):
         return str(message or e).strip()
 
     def _key_advice(self) -> str:
-        """What to do about a rejected key, including "that is not one".
+        """What to do about a rejected key.
 
-        Worth separating: a key that has been revoked and a string that was
-        never an API key produce the same refusal, and only one of them is
-        fixed by making a new key on the same page.
+        Deliberately NOT a guess at the key's format. This did judge keys by
+        their prefix and told somebody with a perfectly good Gemini key that
+        it "was never a key": Google issues keys starting "AQ." as well as the
+        older "AIza" ones. A confident wrong diagnosis is worse than none - it
+        sends people to replace the one thing that was working.
         """
         key = (os.getenv(self.api_key_env) or "").strip()
-        expected = PROVIDER_METADATA.get(self.provider_id, {}).get("key_looks_like")
-        where = f" Create one at {self.keys_url}." if self.keys_url else ""
+        where = f" You can create one at {self.keys_url}." if self.keys_url else ""
 
         if not key:
             return f"'{self.api_key_env}' is not set in your .env file.{where}"
-        if expected and not key.startswith(expected):
-            return (
-                f"That does not look like a {self.provider_name} key at all: "
-                f"theirs start with '{expected}' and yours starts with "
-                f"'{key[:4]}'. A token copied from somewhere else in the same "
-                f"account is not an API key.{where}"
-            )
-        return f"Check '{self.api_key_env}' in your .env file.{where}"
+        return (
+            f"Check '{self.api_key_env}' in your .env file - a key can be "
+            f"revoked, or belong to a project without this API switched "
+            f"on.{where}"
+        )
 
     @staticmethod
     def _retry_after_seconds(e: Exception) -> float:
