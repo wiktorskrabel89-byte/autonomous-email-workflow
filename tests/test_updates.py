@@ -477,3 +477,62 @@ def test_the_helper_leaves_an_existing_config_alone(tmp_path, monkeypatch):
 
     config_module.ensure_config_file("config.yaml")
     assert "gmail" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
+
+
+# --- the cloud run gets YOUR settings, not the shipped ones -----------------
+
+def test_the_config_can_arrive_as_a_secret(tmp_path, monkeypatch):
+    """config.yaml is not in the repository, so a scheduled run checks out a
+    copy without it. Falling back to the example would quietly give the cloud
+    run different labels, sending off and none of the subjects you protected -
+    the same hole known_facts.txt has, closed the same way.
+    """
+    from email_workflow.models import config as config_module
+
+    (tmp_path / "config.example.yaml").write_text(
+        "email:\n  provider: mock\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "resolve_project_file",
+                        lambda p: tmp_path / str(p))
+    monkeypatch.setenv("EMAIL_WORKFLOW_CONFIG", "email:\n  provider: gmail\n")
+
+    loaded = config_module.AppConfig.load_from_file("config.yaml")
+    assert loaded.email.provider == "gmail", "the secret should win over the example"
+
+
+def test_your_own_file_still_beats_the_secret(tmp_path, monkeypatch):
+    from email_workflow.models import config as config_module
+
+    (tmp_path / "config.yaml").write_text("email:\n  provider: outlook\n",
+                                          encoding="utf-8")
+    monkeypatch.setattr(config_module, "resolve_project_file",
+                        lambda p: tmp_path / str(p))
+    monkeypatch.setenv("EMAIL_WORKFLOW_CONFIG", "email:\n  provider: gmail\n")
+
+    assert config_module.AppConfig.load_from_file("config.yaml").email.provider == "outlook"
+
+
+def test_the_uploader_sends_both_personal_files(tmp_path):
+    from email_workflow.core.scheduling import secrets_from_files
+
+    (tmp_path / "config.yaml").write_text("email:\n  provider: gmail\n",
+                                          encoding="utf-8")
+    (tmp_path / "known_facts.txt").write_text("- I work 9 to 5\n", encoding="utf-8")
+
+    found = secrets_from_files(tmp_path)
+    assert "provider: gmail" in found["EMAIL_WORKFLOW_CONFIG"]
+    assert "9 to 5" in found["KNOWN_FACTS"]
+
+
+def test_a_missing_file_is_simply_not_sent(tmp_path):
+    from email_workflow.core.scheduling import secrets_from_files
+    assert secrets_from_files(tmp_path) == {}
+
+
+def test_the_workflow_passes_the_config_secret():
+    """A secret nothing reads is a secret that does nothing."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    workflow = (root / ".github/workflows/email-workflow.yml").read_text(encoding="utf-8")
+    assert "EMAIL_WORKFLOW_CONFIG: ${{ secrets.EMAIL_WORKFLOW_CONFIG }}" in workflow
+    assert "KNOWN_FACTS: ${{ secrets.KNOWN_FACTS }}" in workflow

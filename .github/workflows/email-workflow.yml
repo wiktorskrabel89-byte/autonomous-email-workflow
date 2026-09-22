@@ -88,6 +88,12 @@ jobs:
           # Your knowledge base. known_facts.txt is gitignored because it is
           # personal, so on GitHub the facts come from here instead.
           KNOWN_FACTS: ${{ secrets.KNOWN_FACTS }}
+
+          # Your settings. config.yaml is not in the repository - it is
+          # yours - so without this the scheduled run would use the
+          # shipped example instead: different labels, sending off, and
+          # none of the subjects you asked to keep.
+          EMAIL_WORKFLOW_CONFIG: ${{ secrets.EMAIL_WORKFLOW_CONFIG }}
         run: email-workflow run
 
       - name: Show what the keys were used for

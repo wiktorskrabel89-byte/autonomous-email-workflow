@@ -1,3 +1,4 @@
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Union
@@ -160,6 +161,19 @@ def ensure_config_file(path: Union[str, Path] = "config.yaml") -> Path:
     file_path = resolve_project_file(path)
     if file_path.exists():
         return file_path
+
+    # A scheduled cloud run checks out a repository that no longer carries
+    # config.yaml, so without this it would quietly use the shipped example -
+    # different labels, sending off, none of the subjects you protected. The
+    # same hole known_facts.txt has, closed the same way: the real settings
+    # travel as a secret. Your own file always wins over it.
+    from_env = os.getenv("EMAIL_WORKFLOW_CONFIG", "").strip()
+    if from_env:
+        try:
+            file_path.write_text(from_env + "\n", encoding="utf-8")
+            return file_path
+        except OSError:
+            pass
 
     example = file_path.with_name("config.example.yaml")
     if example.exists():

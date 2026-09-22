@@ -35,6 +35,8 @@ SECRET_NAMES = (
     "DISCORD_WEBHOOK_URL",
     # Without this the scheduled run knows nothing about you.
     "KNOWN_FACTS",
+    # Your settings: the repo no longer carries config.yaml.
+    "EMAIL_WORKFLOW_CONFIG",
     "NOTIFICATION_SENDER_EMAIL", "NOTIFICATION_SENDER_PASSWORD",
     "NOTIFICATION_RECIPIENT_EMAIL",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
@@ -262,6 +264,29 @@ def secrets_from_env_file(env_path: Path) -> Dict[str, str]:
         name, value = name.strip(), value.strip().strip('"').strip("'")
         if name in SECRET_NAMES and value:
             found[name] = value
+    return found
+
+
+# Personal files the repository deliberately does not carry, and the secret
+# each one travels as. Without them a cloud run is a different app: no idea
+# who you are, and the shipped settings rather than yours.
+FILE_SECRETS = {
+    "KNOWN_FACTS": "known_facts.txt",
+    "EMAIL_WORKFLOW_CONFIG": "config.yaml",
+}
+
+
+def secrets_from_files(project_root: Path) -> Dict[str, str]:
+    """Your gitignored files, as secrets the scheduled run can read."""
+    found: Dict[str, str] = {}
+    for name, filename in FILE_SECRETS.items():
+        path = project_root / filename
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            found[name] = text
     return found
 
 

@@ -72,6 +72,7 @@ from email_workflow.core.scheduling import (
     parse_time,
     repo_name_suggestion,
     secrets_from_env_file,
+    secrets_from_files,
     tool_available,
     utc_cron_for_local_time,
     workflow_with_cron,
@@ -2664,6 +2665,7 @@ def _github_menu(project_root, full_name, wf_path, preset=None):
 
         elif choice == "4":
             secrets = secrets_from_env_file(find_env_file())
+            secrets.update(secrets_from_files(project_root))
             if not secrets:
                 console.print("[bold red]There are no keys in your .env to "
                               "upload.[/bold red]\n")
@@ -2778,6 +2780,7 @@ def _schedule_on_github(project_root, preset=None):
         raise typer.Exit(code=1)
 
     secrets = secrets_from_env_file(find_env_file())
+    secrets.update(secrets_from_files(project_root))
     if not secrets:
         console.print(Panel(
             "[bold red]There are no API keys in your .env.[/bold red]\n\n"
