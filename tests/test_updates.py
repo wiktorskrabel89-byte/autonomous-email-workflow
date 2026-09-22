@@ -410,3 +410,70 @@ def test_a_real_change_is_still_listed(project, upstream):
     (upstream / "README.md").write_bytes(b"new text\r\n")
     (project / "README.md").write_bytes(b"old text\r\n")
     assert any("README.md" in line for line in changed_files(upstream, project))
+
+
+# --- a clean checkout has no config at all ----------------------------------
+
+def test_the_run_command_makes_a_config_instead_of_giving_up(tmp_path, monkeypatch):
+    """What GitHub Actions does: clone, then "email-workflow run". config.yaml
+    is gitignored, so the clone has none - and this died with "Config file not
+    found" because the CLI checked the file existed before anything had a
+    chance to create it. The copy-from-example lived one layer below, where
+    that check never let it run.
+    """
+    import subprocess
+    import sys
+
+    (tmp_path / "config.example.yaml").write_text(
+        "email:\n  provider: mock\nai:\n  api:\n    provider: fake\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "fixtures").mkdir()
+    (tmp_path / "fixtures" / "demo_fixtures.json").write_text("[]", encoding="utf-8")
+
+    # The whole environment plus the three that matter. Hand-picking the
+    # variables to keep looked tidier and silently broke the subprocess:
+    # Windows spells it SystemRoot, the filter looked for SYSTEMROOT, and
+    # python then would not start at all - so the test failed for a reason
+    # that had nothing to do with the config.
+    env = {
+        **__import__("os").environ,
+        "EMAIL_WORKFLOW_ROOT": str(tmp_path),
+        "EMAIL_WORKFLOW_DISABLE_LOGIN": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    # A subprocess, not an in-process call: EMAIL_WORKFLOW_ROOT is read when
+    # the package is imported, which is exactly what a CI run does and what an
+    # in-process test cannot reproduce.
+    runner_code = (
+        "import sys; from email_workflow.cli.cli import app; "
+        "sys.argv = ['email-workflow', 'run']; app()"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", runner_code],
+        cwd=tmp_path, env=env, capture_output=True, timeout=180,
+        # Decoded here, not by text=True: the app draws boxes, and this
+        # machine's locale codec cannot read them back.
+        encoding="utf-8", errors="replace",
+    )
+
+    output = (done.stdout or "") + (done.stderr or "")
+    assert (tmp_path / "config.yaml").exists(), (
+        f"it should have made one from the example. Output was:\n{output}"
+    )
+    assert "Config file not found" not in output
+    assert done.returncode == 0, f"the run failed:\n{output}"
+
+
+def test_the_helper_leaves_an_existing_config_alone(tmp_path, monkeypatch):
+    from email_workflow.models import config as config_module
+
+    (tmp_path / "config.example.yaml").write_text("email:\n  provider: mock\n",
+                                                  encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("email:\n  provider: gmail\n",
+                                          encoding="utf-8")
+    monkeypatch.setattr(config_module, "resolve_project_file",
+                        lambda p: tmp_path / str(p))
+
+    config_module.ensure_config_file("config.yaml")
+    assert "gmail" in (tmp_path / "config.yaml").read_text(encoding="utf-8")

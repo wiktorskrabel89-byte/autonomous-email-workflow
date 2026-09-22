@@ -23,7 +23,9 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from email_workflow.models.config import AppConfig, AIMode, EmailLabel
+from email_workflow.models.config import (
+    AppConfig, AIMode, EmailLabel, ensure_config_file,
+)
 from email_workflow.models.email import EmailMessage, EmailCategory, ImportanceLevel, UrgencyLevel, DecisionOption, SenderInfo
 from email_workflow.models.analysis import EmailAnalysis
 from email_workflow.providers.ai_factory import get_ai_provider
@@ -164,7 +166,11 @@ def get_seconds_until_scheduled_time(time_str: str) -> tuple[int, str]:
 def _load_config_quietly() -> AppConfig:
     """Config for startup checks, falling back to defaults if it is unreadable."""
     try:
-        config_path = resolve_project_file("config.yaml")
+        # Resolve with THIS module's resolver, then ask for the file to be
+        # created. Letting ensure_config_file resolve it too went through the
+        # config module's own resolver, which tests do not redirect - so the
+        # app read the real config.yaml instead of the test's.
+        config_path = ensure_config_file(resolve_project_file("config.yaml"))
         if config_path.exists():
             return AppConfig.load_from_file(config_path)
     except Exception:
@@ -427,7 +433,8 @@ def dashboard():
     """Display current active configuration and system status dashboard."""
     print_banner("AUTONOMOUS EMAIL WORKFLOW - SYSTEM DASHBOARD")
     config_path = resolve_project_file("config.yaml")
-    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    config = (AppConfig.load_from_file(config_path)
+              if ensure_config_file(config_path).exists() else AppConfig())
 
     table = Table(title="Active Configuration Summary", border_style="cyan", show_header=True)
     table.add_column("Category", style="bold yellow")
@@ -471,7 +478,8 @@ def setup():
     print_banner("AUTONOMOUS EMAIL WORKFLOW - INTERACTIVE SETUP")
 
     config_path = resolve_project_file("config.yaml")
-    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    config = (AppConfig.load_from_file(config_path)
+              if ensure_config_file(config_path).exists() else AppConfig())
 
     # AI Configuration Section
     console.print("[bold yellow]Select AI Mode:[/bold yellow]")
@@ -711,7 +719,8 @@ def test_report(
     channel = _unwrap(channel, None)
     print_banner("TEST NOTIFICATION & REPORT SYSTEM")
     config_path = resolve_project_file("config.yaml")
-    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    config = (AppConfig.load_from_file(config_path)
+              if ensure_config_file(config_path).exists() else AppConfig())
 
     if channel:
         config.notifications.channel = channel
@@ -1166,9 +1175,16 @@ def run(
 
     print_banner("AUTONOMOUS EMAIL WORKFLOW - RUN MODE")
 
-    config_path = resolve_project_file(config_file)
+    # ensure_config_file, not resolve_project_file: a fresh clone has no
+    # config.yaml - it is gitignored - and that includes every GitHub Actions
+    # run. Checking the file exists before giving it the chance to be created
+    # is what broke the scheduled run with "Config file not found".
+    config_path = ensure_config_file(resolve_project_file(config_file))
     if not config_path.exists():
-        console.print(f"[bold red]Config file not found: {config_path}[/bold red]")
+        console.print(
+            f"[bold red]No config, and no config.example.yaml to make one "
+            f"from: {config_path}[/bold red]"
+        )
         raise typer.Exit(code=1)
 
     config = AppConfig.load_from_file(config_path)
@@ -1321,7 +1337,8 @@ def models(
     print_banner("AVAILABLE MODELS")
 
     config_path = resolve_project_file("config.yaml")
-    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    config = (AppConfig.load_from_file(config_path)
+              if ensure_config_file(config_path).exists() else AppConfig())
 
     prov_id = (provider or config.ai.api.provider).lower()
     if prov_id not in PROVIDER_METADATA:
@@ -1530,7 +1547,8 @@ def settings():
     print_banner("SENDING & MAILBOX SETTINGS")
 
     config_path = resolve_project_file("config.yaml")
-    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    config = (AppConfig.load_from_file(config_path)
+              if ensure_config_file(config_path).exists() else AppConfig())
     mail = config.email
 
     def show(value: bool) -> str:
@@ -2047,7 +2065,8 @@ def labels():
     """Sort your mail into labels of your own - Rabaty, Job offers, whatever."""
     print_banner("YOUR LABELS")
     config_path = resolve_project_file("config.yaml")
-    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    config = (AppConfig.load_from_file(config_path)
+              if ensure_config_file(config_path).exists() else AppConfig())
 
     console.print(Panel(
         "A label is a name plus a sentence saying what belongs in it.\n\n"
@@ -2134,7 +2153,8 @@ def facts():
     print_banner("PERSONAL KNOWLEDGE BASE & KNOWN FACTS")
     mgr = KnownFactsManager()
     config_path = resolve_project_file("config.yaml")
-    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    config = (AppConfig.load_from_file(config_path)
+              if ensure_config_file(config_path).exists() else AppConfig())
 
     while True:
         current = mgr.load_facts()
@@ -2918,7 +2938,8 @@ def update(
 
     project_root = resolve_project_file("config.yaml").parent
     config_path = resolve_project_file("config.yaml")
-    config = AppConfig.load_from_file(config_path) if config_path.exists() else AppConfig()
+    config = (AppConfig.load_from_file(config_path)
+              if ensure_config_file(config_path).exists() else AppConfig())
     source = _update_source(config)
 
     with console.status("[cyan]checking...", spinner="dots"):

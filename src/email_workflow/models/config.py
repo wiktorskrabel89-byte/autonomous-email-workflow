@@ -141,6 +141,39 @@ class AIConfig(BaseModel):
     keys: KeysConfig = Field(default_factory=KeysConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
 
+def ensure_config_file(path: Union[str, Path] = "config.yaml") -> Path:
+    """The config file, created from the shipped example if it is not there.
+
+    config.yaml is YOUR file and is not in the repository - it holds your
+    address, whether sending is allowed, your labels. It used to be tracked,
+    and the app's own "git add -A" during an update committed it and published
+    it, so now config.example.yaml is what ships.
+
+    Which means a fresh checkout has no config at all, and that is not only a
+    new user's first run: it is every GitHub Actions run, which starts from a
+    clean clone. This used to live inside load_from_file, where the CLI never
+    reached it - "run" checked the file existed and gave up first. Somewhere a
+    caller can ask BEFORE deciding the file is missing is the whole point.
+
+    Returns the path either way; it can still not exist if no example ships.
+    """
+    file_path = resolve_project_file(path)
+    if file_path.exists():
+        return file_path
+
+    example = file_path.with_name("config.example.yaml")
+    if example.exists():
+        try:
+            file_path.write_text(
+                example.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        except OSError:
+            # A read-only checkout is not a reason to fall over: the caller
+            # can still read the example itself.
+            return example
+    return file_path
+
+
 class EmailLabel(BaseModel):
     """One label of your own, and what belongs in it.
 
@@ -295,19 +328,7 @@ class AppConfig(BaseModel):
 
     @classmethod
     def load_from_file(cls, path: Union[str, Path]) -> "AppConfig":
-        file_path = resolve_project_file(path)
-
-        # config.yaml is YOUR file and is not in the repository - it holds your
-        # address, whether sending is allowed, your labels. It used to be
-        # tracked, and the app's own "git add -A" during an update committed it
-        # and published it. What ships is config.example.yaml, copied here the
-        # first time the app needs one, so a fresh clone still starts.
-        if not file_path.exists():
-            example = file_path.with_name("config.example.yaml")
-            if example.exists():
-                file_path.write_text(
-                    example.read_text(encoding="utf-8"), encoding="utf-8"
-                )
+        file_path = ensure_config_file(path)
 
         if not file_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {file_path}")

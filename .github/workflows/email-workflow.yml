@@ -24,7 +24,7 @@ on:
     # 06:00 UTC daily. GitHub cron is always UTC, so adjust for your timezone:
     # Poland is UTC+1 in winter and UTC+2 in summer, so this is 07:00 or 08:00.
     # A scheduled run can start a few minutes late when GitHub is busy.
-    - cron: "0 8 * * *"
+    - cron: "0 17 * * *"
   workflow_dispatch:        # lets you run it by hand from the Actions tab
 
 # Two copies running at once would process the same emails twice.
