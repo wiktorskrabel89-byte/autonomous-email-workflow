@@ -120,7 +120,7 @@ def _prompt_api_key(env_var: str, prov_name: str) -> str:
     hide = Confirm.ask("Mask key input on screen for privacy?", default=False)
     if hide:
         console.print("[dim](Keystrokes will be hidden on screen. Paste or type key and press Enter)[/dim]")
-    key = Prompt.ask(f"API Key ({env_var})", password=hide)
+    key = ask(f"API Key ({env_var})", password=hide)
     return key.strip()
 
 def _write_env_var(key: str, value: str):
@@ -188,7 +188,7 @@ def _ask_password(label: str, config: Optional[AppConfig] = None) -> str:
     """
     if config is None:
         config = _load_config_quietly()
-    return Prompt.ask(label, password=not config.security.show_password_while_typing)
+    return ask(label, password=not config.security.show_password_while_typing)
 
 
 def _create_login(auth: AuthManager, config: Optional[AppConfig] = None) -> None:
@@ -206,7 +206,7 @@ def _create_login(auth: AuthManager, config: Optional[AppConfig] = None) -> None
         )
     )
     while True:
-        username = Prompt.ask("Choose a username", default=os.getenv("USERNAME") or "user")
+        username = ask("Choose a username", default=os.getenv("USERNAME") or "user")
         password = _ask_password(
             f"Choose a password (at least {MIN_PASSWORD_LENGTH} characters)", config
         )
@@ -227,6 +227,15 @@ def _create_login(auth: AuthManager, config: Optional[AppConfig] = None) -> None
 
 def _require_login() -> None:
     """Ask who this is before the app opens. Exits if they cannot prove it."""
+    try:
+        _do_require_login()
+    except GoBack:
+        # Nothing sits behind the login, so "back" means "not now".
+        console.print("[yellow]Closed without logging in.[/yellow]")
+        raise typer.Exit(code=0)
+
+
+def _do_require_login() -> None:
     config = _load_config_quietly()
     if not config.security.require_login:
         return
@@ -247,7 +256,7 @@ def _require_login() -> None:
 
     attempts = max(1, config.security.max_login_attempts)
     for remaining in range(attempts - 1, -1, -1):
-        username = Prompt.ask("Username", default=auth.username)
+        username = ask("Username", default=auth.username)
         password = _ask_password("Password", config)
 
         if auth.verify(username, password):
@@ -336,7 +345,7 @@ def passwd():
         return
 
     while True:
-        username = Prompt.ask("New username", default=auth.username)
+        username = ask("New username", default=auth.username)
         password = _ask_password(
             f"New password (at least {MIN_PASSWORD_LENGTH} characters)", config
         )
@@ -413,6 +422,9 @@ def interactive_main_menu():
             lines.append(line)
         leave = len(entries) + 1
         lines.append(f"[bold yellow]{leave}.[/bold yellow] Exit")
+        lines.append("")
+        lines.append("[dim]Type [bold]b[/bold] at any question to come "
+                     "back here.[/dim]")
         console.print(Panel("\n".join(lines), border_style="cyan"))
 
         choice = Prompt.ask(
@@ -426,8 +438,16 @@ def interactive_main_menu():
             sys.exit(0)
 
         console.clear()
-        entries[int(choice) - 1][2]()
-        Prompt.ask("\nPress Enter to return to main menu")
+        try:
+            entries[int(choice) - 1][2]()
+        except GoBack:
+            # Straight back to the menu. Making somebody press Enter to
+            # acknowledge that they asked to leave is the same nuisance again.
+            continue
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Stopped.[/yellow]")
+            continue
+        ask("\nPress Enter to return to main menu")
 
 @app.command()
 def dashboard():
@@ -488,7 +508,7 @@ def setup():
     console.print("2. Offline Fake AI (Demo mode, no keys required)")
     console.print("3. Local Ollama HTTP Server")
 
-    mode_choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="1")
+    mode_choice = ask("Choice", choices=["1", "2", "3"], default="1")
 
     if mode_choice == "2":
         config.ai.mode = AIMode.API
@@ -496,8 +516,8 @@ def setup():
         console.print("[bold green]Configured for Offline Fake AI![/bold green]")
     elif mode_choice == "3":
         config.ai.mode = AIMode.LOCAL
-        endpoint = Prompt.ask("Ollama Endpoint", default="http://localhost:11434")
-        model = Prompt.ask("Ollama Model Name", default="llama3.2")
+        endpoint = ask("Ollama Endpoint", default="http://localhost:11434")
+        model = ask("Ollama Model Name", default="llama3.2")
         config.ai.local.endpoint = endpoint
         config.ai.local.model = model
         console.print(f"[bold green]Configured for Local Ollama ({model} at {endpoint})![/bold green]")
@@ -551,7 +571,7 @@ def setup():
     console.print("\n[bold yellow]Email Account Setup:[/bold yellow]")
     console.print("1. Real Gmail IMAP & SMTP (reads your actual inbox & sends real replies)")
     console.print("2. Mock Inbox Reader (test fixtures, no credentials needed)")
-    ep_choice = Prompt.ask("Choice", choices=["1", "2"], default="1")
+    ep_choice = ask("Choice", choices=["1", "2"], default="1")
 
     if ep_choice == "1":
         import webbrowser
@@ -563,7 +583,7 @@ def setup():
         two_step_url = "https://myaccount.google.com/signinoptions/twosv"
         console.print("\n[bold cyan]--- Real Gmail Setup ---[/bold cyan]")
 
-        g_email = Prompt.ask("Gmail Address", default=os.getenv("GMAIL_ADDRESS", config.email.account_ref))
+        g_email = ask("Gmail Address", default=os.getenv("GMAIL_ADDRESS", config.email.account_ref))
 
         # Check if App Password already saved
         existing_pwd = os.getenv("GMAIL_APP_PASSWORD", "")
@@ -596,7 +616,7 @@ def setup():
                     "[dim]Turn it on there (phone or authenticator app), then "
                     "come back here.[/dim]"
                 )
-                Prompt.ask("Press Enter once 2-Step Verification is on", default="")
+                ask("Press Enter once 2-Step Verification is on", default="")
 
             console.print(
                 f"\n[bold white]Step 2:[/bold white] Generate a Gmail App Password at:\n"
@@ -614,7 +634,7 @@ def setup():
                 "This is not your normal Gmail password, and your normal "
                 "password will not work here.[/dim]\n"
             )
-            g_pwd = Prompt.ask("Gmail App Password (16 chars, visible so you can type/paste it)")
+            g_pwd = ask("Gmail App Password (16 chars, visible so you can type/paste it)")
 
         config.email.account_ref = g_email
         config.email.mailbox = "INBOX"
@@ -640,23 +660,23 @@ def setup():
     console.print("4. WhatsApp (Twilio)")
     console.print("5. All channels")
 
-    notif_choice = Prompt.ask("Choice", choices=["1", "2", "3", "4", "5"], default="1")
+    notif_choice = ask("Choice", choices=["1", "2", "3", "4", "5"], default="1")
     notif_map = {"1": "terminal", "2": "discord", "3": "email", "4": "whatsapp", "5": "all"}
     config.notifications.channel = notif_map[notif_choice]
 
     if notif_choice in ("2", "5"):
         console.print("\n[bold cyan]--- Discord Webhook Configuration ---[/bold cyan]")
-        discord_url = Prompt.ask("Enter Discord Webhook URL", default=os.getenv("DISCORD_WEBHOOK_URL", ""))
+        discord_url = ask("Enter Discord Webhook URL", default=os.getenv("DISCORD_WEBHOOK_URL", ""))
         if discord_url:
             _write_env_var("DISCORD_WEBHOOK_URL", discord_url)
 
     if notif_choice in ("3", "5"):
         console.print("\n[bold cyan]--- Email SMTP Configuration ---[/bold cyan]")
-        sender = Prompt.ask("Sender Email", default=os.getenv("NOTIFICATION_SENDER_EMAIL", account_email))
-        pwd = Prompt.ask("Sender Email Password / App Password", password=True)
-        recipient = Prompt.ask("Recipient Email for Reports", default=os.getenv("NOTIFICATION_RECIPIENT_EMAIL", sender))
-        smtp_srv = Prompt.ask("SMTP Server Host", default=os.getenv("SMTP_SERVER", "smtp.gmail.com"))
-        smtp_p = Prompt.ask("SMTP Server Port", default=os.getenv("SMTP_PORT", "587"))
+        sender = ask("Sender Email", default=os.getenv("NOTIFICATION_SENDER_EMAIL", account_email))
+        pwd = ask("Sender Email Password / App Password", password=True)
+        recipient = ask("Recipient Email for Reports", default=os.getenv("NOTIFICATION_RECIPIENT_EMAIL", sender))
+        smtp_srv = ask("SMTP Server Host", default=os.getenv("SMTP_SERVER", "smtp.gmail.com"))
+        smtp_p = ask("SMTP Server Port", default=os.getenv("SMTP_PORT", "587"))
 
         if sender: _write_env_var("NOTIFICATION_SENDER_EMAIL", sender)
         if pwd: _write_env_var("NOTIFICATION_SENDER_PASSWORD", pwd)
@@ -666,10 +686,10 @@ def setup():
 
     if notif_choice in ("4", "5"):
         console.print("\n[bold cyan]--- WhatsApp (Twilio) Configuration ---[/bold cyan]")
-        sid = Prompt.ask("Twilio Account SID", default=os.getenv("TWILIO_ACCOUNT_SID", ""))
-        token = Prompt.ask("Twilio Auth Token", password=True)
-        from_num = Prompt.ask("Twilio WhatsApp From (e.g. whatsapp:+14155238886)", default=os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886"))
-        to_num = Prompt.ask("Your WhatsApp To (e.g. whatsapp:+1234567890)", default=os.getenv("TWILIO_WHATSAPP_TO", ""))
+        sid = ask("Twilio Account SID", default=os.getenv("TWILIO_ACCOUNT_SID", ""))
+        token = ask("Twilio Auth Token", password=True)
+        from_num = ask("Twilio WhatsApp From (e.g. whatsapp:+14155238886)", default=os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886"))
+        to_num = ask("Your WhatsApp To (e.g. whatsapp:+1234567890)", default=os.getenv("TWILIO_WHATSAPP_TO", ""))
 
         if sid: _write_env_var("TWILIO_ACCOUNT_SID", sid)
         if token: _write_env_var("TWILIO_AUTH_TOKEN", token)
@@ -1635,7 +1655,7 @@ def settings():
         "Star important mail?", default=mail.star_important
     )
     if mail.star_important:
-        mail.important_label = Prompt.ask(
+        mail.important_label = ask(
             "Label to put on it", default=mail.important_label
         )
 
@@ -2002,7 +2022,7 @@ def _learn_from_email(mgr, config, current):
     console.print("[dim]Check each one. The assistant will state these to real "
                   "people as fact.[/dim]")
 
-    picked_text = Prompt.ask(
+    picked_text = ask(
         "Which do you want to keep? (numbers like 1,3 - or 'all', or 'none')",
         default="none",
     ).strip().lower()
@@ -2033,7 +2053,7 @@ def _add_to_facts(mgr, config, current):
         "the AI files it in the right place.\n"
         "[dim]e.g. \"my phone is 600 100 200\" or \"I don't work Fridays\"[/dim]"
     )
-    addition = Prompt.ask("New information").strip()
+    addition = ask("New information").strip()
     if not addition:
         console.print("[dim]Nothing typed.[/dim]")
         return
@@ -2110,19 +2130,19 @@ def labels():
             "[bold yellow]2.[/bold yellow] Remove one\n"
             "[bold yellow]3.[/bold yellow] Back\n"
         )
-        choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="3")
+        choice = ask("Choice", choices=["1", "2", "3"], default="3")
 
         if choice == "3":
             return
 
         if choice == "1":
-            name = Prompt.ask("Label name (what you will see in Gmail)").strip()
+            name = ask("Label name (what you will see in Gmail)").strip()
             if not name:
                 continue
             if any(item.name.lower() == name.lower() for item in current):
                 console.print(f"[yellow]You already have '{name}'.[/yellow]\n")
                 continue
-            about = Prompt.ask(
+            about = ask(
                 "What belongs in it? (a sentence, in your own words)"
             ).strip()
             if not about:
@@ -2137,7 +2157,7 @@ def labels():
         elif choice == "2":
             if not current:
                 continue
-            which = Prompt.ask(
+            which = ask(
                 "Which one? (its name)",
                 choices=[item.name for item in current],
             )
@@ -2187,7 +2207,7 @@ def facts():
             for n, (_, label) in enumerate(options, 1)
         ) + "\n")
 
-        picked = Prompt.ask(
+        picked = ask(
             "Choice",
             choices=[str(n) for n in range(1, len(options) + 1)],
             default=str(len(options)),
@@ -2231,6 +2251,42 @@ def _only_the_launcher_was_locked(output: str) -> bool:
     return locked and "email-workflow.exe" in text
 
 
+class GoBack(Exception):
+    """Raised when somebody types "b" at a question: take me back."""
+
+
+# What counts as "take me back", in both languages he uses. Deliberately short
+# words nobody would type as a real answer to anything here.
+BACK_WORDS = frozenset({"b", "back", "wstecz", "cofnij", "q", "quit", "cancel"})
+
+
+def ask(question: str, **kwargs):
+    """Prompt.ask, except that "b" gets you out of the screen you are in.
+
+    Every question in this app goes through here. The alternative was
+    answering your way to the end of a screen you opened by mistake - and
+    since the defaults are the fastest thing to hit, that meant pressing
+    Enter through decisions rather than making them.
+
+    A prompt with fixed choices has "b" added to them, or Prompt would refuse
+    it and ask again, which is exactly the trap this removes.
+    """
+    # Never at a password prompt. Somebody whose password is "b" has to be
+    # able to type it, and there is nothing behind the login screen to go
+    # back to anyway.
+    if kwargs.get("password"):
+        return Prompt.ask(question, **kwargs)
+
+    choices = kwargs.get("choices")
+    if choices and "b" not in choices:
+        kwargs = {**kwargs, "choices": list(choices) + ["b"]}
+
+    answer = Prompt.ask(question, **kwargs)
+    if isinstance(answer, str) and answer.strip().lower() in BACK_WORDS:
+        raise GoBack()
+    return answer
+
+
 def _pick_provider(question: str, default_choice: str = "1", skip: str = ""):
     """Choose a provider, take its key, take its model. (id, env var, model).
 
@@ -2262,7 +2318,7 @@ def _pick_provider(question: str, default_choice: str = "1", skip: str = ""):
     choices = [str(n) for n in range(1, len(options) + 1)]
     if default_choice not in choices:
         default_choice = "1"
-    picked = Prompt.ask("Choice", choices=choices, default=default_choice)
+    picked = ask("Choice", choices=choices, default=default_choice)
     prov_id = options[int(picked) - 1][0]
     meta = PROVIDER_METADATA[prov_id]
     env_var = meta["env_var"]
@@ -2278,7 +2334,7 @@ def _pick_provider(question: str, default_choice: str = "1", skip: str = ""):
             _write_env_var(env_var, api_key)
             console.print(f"[bold green]Saved {env_var} to .env.[/bold green]")
 
-    model_name = Prompt.ask(
+    model_name = ask(
         f"Model for {meta['name']}", default=meta["default_model"]
     )
     return prov_id, env_var, model_name.strip() or meta["default_model"]
@@ -2290,7 +2346,7 @@ def _ask_a_few(question: str, example: str, limit: int = 3) -> list:
     for n in range(limit):
         if n == 0:
             console.print(f"[dim]for example: {example}[/dim]")
-        answer = Prompt.ask(f"  {n + 1}", default="").strip()
+        answer = ask(f"  {n + 1}", default="").strip()
         if not answer:
             break
         answers.append(answer)
@@ -2614,7 +2670,7 @@ def _ask_time(default="07:30"):
     """Ask until it is a time, or give up if the user is clearly done."""
     while True:
         try:
-            return parse_time(Prompt.ask("What time each day?", default=default))
+            return parse_time(ask("What time each day?", default=default))
         except ValueError as e:
             console.print(f"[red]{e}[/red]")
 
@@ -2649,7 +2705,7 @@ def _github_menu(project_root, full_name, wf_path, preset=None):
             title="Already on GitHub",
             border_style="cyan",
         ))
-        choice = Prompt.ask("Choice", choices=["1", "2", "3", "4", "5", "6"], default="6")
+        choice = ask("Choice", choices=["1", "2", "3", "4", "5", "6"], default="6")
 
         if choice == "6":
             return ""
@@ -2862,7 +2918,7 @@ def _schedule_on_github(project_root, preset=None):
     cron = utc_cron_for_local_time(hour, minute)
     drift = describe_drift(hour, minute)
 
-    repo = Prompt.ask("Repository name", default=repo_name_suggestion(project_root))
+    repo = ask("Repository name", default=repo_name_suggestion(project_root))
 
     console.print(Panel(
         f"[bold]This will:[/bold]\n"
@@ -2953,7 +3009,7 @@ def schedule(
             "   [dim]Runs on GitHub's machines, so your computer can be off. "
             "You sign in to GitHub once and this sets up everything else.[/dim]\n"
         )
-        where = "computer" if Prompt.ask("Choice", choices=["1", "2"], default="2") == "1" else "github"
+        where = "computer" if ask("Choice", choices=["1", "2"], default="2") == "1" else "github"
 
     where = where.strip().lower()
     if where not in ("computer", "github"):

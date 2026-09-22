@@ -148,7 +148,12 @@ def test_pressing_enter_through_both_changes_nothing(monkeypatch, tmp_path):
 
 def test_it_stops_asking_after_a_few(monkeypatch, tmp_path):
     """A prompt that loops until you give up is a trap in a first-run wizard."""
+    # Real-looking answers, not single letters: "b" means "take me back" at
+    # every question in the app now, so using it as filler here was testing
+    # the wrong thing.
     _, _, _, answers = run_about_you(
-        monkeypatch, tmp_path, ["a", "b", "c", "d", "e", "f", "g", "h"],
+        monkeypatch, tmp_path,
+        ["job offers", "my landlord", "school", "I work 9 to 5",
+         "I am a designer", "I live in Krakow", "extra", "more"],
     )
     assert len(answers.asked) == 6, "three topics and three facts, then move on"
