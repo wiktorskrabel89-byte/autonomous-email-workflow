@@ -16,6 +16,7 @@ from email_workflow.providers.base_ai import (
     CLASSIFICATION_PROMPT_TEMPLATE,
     DECISION_SUPPORT_PROMPT_TEMPLATE,
     REPLY_GENERATION_PROMPT_TEMPLATE,
+    trim_body,
 )
 
 # A local model on modest hardware is slower than a cloud one, and it may
@@ -117,7 +118,7 @@ class OllamaProvider(AIProvider):
             sender_email=message.sender.email,
             known_contact="yes" if message.sender.known_contact else "no",
             received_at=message.received_at,
-            body=message.body,
+            body=trim_body(message.body),
             thread_context=thread_context,
             known_facts=known_facts or "None provided.",
             protected_topics=self.protected_topics_block(),
@@ -145,7 +146,7 @@ class OllamaProvider(AIProvider):
     ) -> DecisionSupportOutput:
         prompt = DECISION_SUPPORT_PROMPT_TEMPLATE.format(
             subject=message.subject,
-            body=message.body,
+            body=trim_body(message.body),
             known_facts=known_facts or "None provided.",
         )
         res_dict = self._generate_json(prompt)
@@ -169,7 +170,7 @@ class OllamaProvider(AIProvider):
             subject=message.subject,
             sender_name=message.sender.name,
             sender_email=message.sender.email,
-            body=message.body,
+            body=trim_body(message.body),
             thread_context=thread_context,
             known_facts=known_facts or "None provided.",
         )

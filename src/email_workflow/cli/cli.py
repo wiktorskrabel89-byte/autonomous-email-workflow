@@ -24,7 +24,7 @@ from rich.progress import (
 )
 
 from email_workflow.models.config import (
-    AppConfig, AIMode, EmailLabel, ensure_config_file,
+    AppConfig, AIMode, EmailLabel, FallbackLink, ensure_config_file,
 )
 from email_workflow.models.email import EmailMessage, EmailCategory, ImportanceLevel, UrgencyLevel, DecisionOption, SenderInfo
 from email_workflow.models.analysis import EmailAnalysis
@@ -503,39 +503,49 @@ def setup():
         console.print(f"[bold green]Configured for Local Ollama ({model} at {endpoint})![/bold green]")
     else:
         config.ai.mode = AIMode.API
-        console.print("\n[bold yellow]Select API Provider:[/bold yellow]")
-        console.print("1. OpenAI (ChatGPT models, e.g. gpt-4o-mini)")
-        console.print("2. Google Gemini (e.g. gemini-3.1-flash-lite)")
-        console.print("3. Groq (e.g. llama-3.3-70b-versatile)")
-        console.print("4. OpenRouter (e.g. anthropic/claude-3.5-sonnet)")
-
-        prov_map = {"1": ("openai", "gpt-4o-mini", "OPENAI_API_KEY"),
-                    "2": ("gemini", "gemini-3.1-flash-lite", "GEMINI_API_KEY"),
-                    "3": ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
-                    "4": ("openrouter", "anthropic/claude-3.5-sonnet", "OPENROUTER_API_KEY")}
-
-        p_choice = Prompt.ask("Choice", choices=["1", "2", "3", "4"], default="1")
-        prov_key, default_model, env_var = prov_map[p_choice]
-
+        prov_key, env_var, model_name = _pick_provider(
+            "Select API Provider:", default_choice="2"
+        )
         config.ai.api.provider = prov_key
         config.ai.api.api_key_env = env_var
-
-        current_key = os.getenv(env_var, "")
-        if current_key:
-            console.print(f"[dim]Found existing key for {env_var}[/dim]")
-            if Confirm.ask("Use existing key?", default=True):
-                api_key = current_key
-            else:
-                api_key = _prompt_api_key(env_var, prov_key.upper())
-        else:
-            api_key = _prompt_api_key(env_var, prov_key.upper())
-
-        if api_key:
-            _write_env_var(env_var, api_key)
-            console.print(f"[bold green]Saved {env_var} to .env![/bold green]")
-
-        model_name = Prompt.ask(f"Enter Model Name for {prov_key.upper()}", default=default_model)
         config.ai.api.model = model_name
+
+        # A second provider, with its own key and its own model. Without this
+        # there was nowhere to put one: every provider except the primary is
+        # found by auto-detect, and those entries carry no model, so whatever
+        # you typed for them was dropped and the built-in default used instead.
+        #
+        # It is also the difference between a run that survives a bad morning
+        # and one that stops: one account's quota, one model being overloaded,
+        # one key going bad.
+        console.print(Panel(
+            "[bold]A second provider, as a backup?[/bold]\n\n"
+            "When the first one runs out of free quota for the day, is too "
+            "busy, or its key stops working, the run carries on with this one "
+            "instead of stopping.\n\n"
+            "[dim]It needs its own key - a different company, a different free "
+            "tier. You can skip this and add it later by running the wizard "
+            "again.[/dim]",
+            title="Backup provider",
+            border_style="cyan",
+        ))
+        if Confirm.ask("Set up a second provider?", default=True):
+            second_key, second_env, second_model = _pick_provider(
+                "Which one as the backup?",
+                default_choice="3" if prov_key != "groq" else "2",
+                skip=prov_key,
+            )
+            if second_key:
+                config.ai.fallback.enabled = True
+                config.ai.fallback.chain = [
+                    link for link in config.ai.fallback.chain
+                    if link.provider != second_key
+                ] + [FallbackLink(provider=second_key, model=second_model,
+                                  api_key_env=second_env)]
+                console.print(
+                    f"[green]Backup set: {second_key} / {second_model}. "
+                    f"It is used only when the first one cannot answer.[/green]"
+                )
 
     # Email Account Section — single unified flow
     console.print("\n[bold yellow]Email Account Setup:[/bold yellow]")
@@ -2219,6 +2229,59 @@ def _only_the_launcher_was_locked(output: str) -> bool:
         or "używany przez inny proces" in text
     )
     return locked and "email-workflow.exe" in text
+
+
+def _pick_provider(question: str, default_choice: str = "1", skip: str = ""):
+    """Choose a provider, take its key, take its model. (id, env var, model).
+
+    One function for both the main provider and the backup, so the second one
+    is set up exactly as carefully as the first - same key prompt, same model
+    prompt, same defaults. Returns ("", "", "") if there is nothing to choose.
+
+    The model matters here: it is the thing that had nowhere to be saved for
+    any provider except the primary.
+    """
+    options = [
+        ("openai", "OpenAI", "ChatGPT models"),
+        ("gemini", "Google Gemini", "free tier, good for a whole inbox"),
+        ("groq", "Groq", "fast, generous free tier"),
+        ("openrouter", "OpenRouter", "many models behind one key"),
+    ]
+    options = [o for o in options if o[0] != skip]
+    if not options:
+        return "", "", ""
+
+    console.print(f"\n[bold yellow]{question}[/bold yellow]")
+    for number, (prov_id, label, note) in enumerate(options, 1):
+        meta = PROVIDER_METADATA[prov_id]
+        console.print(
+            f"{number}. {label} [dim]({note}; default model "
+            f"{meta['default_model']})[/dim]"
+        )
+
+    choices = [str(n) for n in range(1, len(options) + 1)]
+    if default_choice not in choices:
+        default_choice = "1"
+    picked = Prompt.ask("Choice", choices=choices, default=default_choice)
+    prov_id = options[int(picked) - 1][0]
+    meta = PROVIDER_METADATA[prov_id]
+    env_var = meta["env_var"]
+
+    existing = os.getenv(env_var, "")
+    if existing and Confirm.ask(
+        f"Use the {env_var} already in your .env?", default=True
+    ):
+        api_key = existing
+    else:
+        api_key = _prompt_api_key(env_var, prov_id.upper())
+        if api_key:
+            _write_env_var(env_var, api_key)
+            console.print(f"[bold green]Saved {env_var} to .env.[/bold green]")
+
+    model_name = Prompt.ask(
+        f"Model for {meta['name']}", default=meta["default_model"]
+    )
+    return prov_id, env_var, model_name.strip() or meta["default_model"]
 
 
 def _ask_a_few(question: str, example: str, limit: int = 3) -> list:

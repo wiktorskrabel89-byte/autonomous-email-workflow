@@ -10,7 +10,10 @@ reaches the user as a Python traceback.
 # would fail identically everywhere, so it is not in this set.
 FAILOVER_KINDS = frozenset(
     {"quota", "rate_limit", "unavailable", "auth", "model_gone", "network",
-     "no_access"}
+     "no_access",
+     # The same request fits a model with a bigger context window, so this is
+     # worth handing on. A genuinely malformed request is not.
+     "too_long"}
 )
 
 # Failures that pass on their own. A per-minute rate limit clears in seconds

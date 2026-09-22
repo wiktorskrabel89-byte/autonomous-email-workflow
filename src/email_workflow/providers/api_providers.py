@@ -35,6 +35,7 @@ from email_workflow.providers.base_ai import (
     DECISION_SUPPORT_PROMPT_TEMPLATE,
     REPLY_GENERATION_PROMPT_TEMPLATE,
     REPLY_REVIEW_PROMPT_TEMPLATE,
+    trim_body,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -52,6 +53,12 @@ PROVIDER_METADATA = {
         "env_var": "GEMINI_API_KEY",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "keys_url": "https://aistudio.google.com/apikey",
+        # Every Google AI Studio key starts with this. A token from somewhere
+        # else in Google - the Antigravity IDE hands out "AQ." ones - is not an
+        # API key and Google answers "invalid authentication credentials",
+        # which reads as "my key stopped working" rather than "that was never
+        # a key".
+        "key_looks_like": "AIza",
         # The free tier's workhorse: the cheapest Gemini per request, so the
         # daily allowance stretches furthest over a full inbox.
         "default_model": "gemini-3.1-flash-lite",
@@ -61,7 +68,9 @@ PROVIDER_METADATA = {
         "env_var": "GROQ_API_KEY",
         "base_url": "https://api.groq.com/openai/v1",
         "keys_url": "https://console.groq.com/keys",
-        "default_model": "llama-3.3-70b-versatile",
+        "default_model": "qwen/qwen3.8-27b",
+        # A Gemini key is "AIza" and 39 characters; a Groq key is "gsk_".
+        "key_looks_like": "gsk_",
     },
     "openrouter": {
         "name": "OpenRouter",
@@ -249,6 +258,28 @@ class OpenAICompatibleProvider(AIProvider):
         message = getattr(e, "message", "")
         return str(message or e).strip()
 
+    def _key_advice(self) -> str:
+        """What to do about a rejected key, including "that is not one".
+
+        Worth separating: a key that has been revoked and a string that was
+        never an API key produce the same refusal, and only one of them is
+        fixed by making a new key on the same page.
+        """
+        key = (os.getenv(self.api_key_env) or "").strip()
+        expected = PROVIDER_METADATA.get(self.provider_id, {}).get("key_looks_like")
+        where = f" Create one at {self.keys_url}." if self.keys_url else ""
+
+        if not key:
+            return f"'{self.api_key_env}' is not set in your .env file.{where}"
+        if expected and not key.startswith(expected):
+            return (
+                f"That does not look like a {self.provider_name} key at all: "
+                f"theirs start with '{expected}' and yours starts with "
+                f"'{key[:4]}'. A token copied from somewhere else in the same "
+                f"account is not an API key.{where}"
+            )
+        return f"Check '{self.api_key_env}' in your .env file.{where}"
+
     @staticmethod
     def _retry_after_seconds(e: Exception) -> float:
         """How long the server asked us to wait, in seconds. 0 if it did not.
@@ -307,8 +338,7 @@ class OpenAICompatibleProvider(AIProvider):
         if isinstance(e, AuthenticationError):
             return AIProviderError(
                 f"{self.provider_name} rejected your API key.",
-                hint=f"Check '{self.api_key_env}' in your .env file."
-                + (f" You can create a new key at {self.keys_url}." if self.keys_url else ""),
+                hint=self._key_advice(),
                 kind="auth",
             )
         if isinstance(e, PermissionDeniedError):
@@ -375,6 +405,19 @@ class OpenAICompatibleProvider(AIProvider):
                 retry_after=self._retry_after_seconds(e),
             )
         if isinstance(e, BadRequestError):
+            # Too long is not "your request is wrong": the SAME request fits a
+            # model with a bigger window, so it has to be able to move on
+            # rather than ending the run. Suggesting JSON mode here sent
+            # somebody looking at the wrong thing entirely.
+            if "context_length_exceeded" in _describe_error(e).lower():
+                return AIProviderError(
+                    f"The email was too long for '{model}' to read in one go.",
+                    hint="Bodies are already cut before they are sent, so this "
+                    "is a model with an unusually small window. It moves to the "
+                    "next one; put a bigger model in config.yaml under "
+                    "ai.api.model if it keeps happening.",
+                    kind="too_long",
+                )
             return AIProviderError(
                 f"{self.provider_name} rejected the request for '{model}': {e}",
                 hint="The model may not support JSON mode. Try a different model "
@@ -576,7 +619,7 @@ class OpenAICompatibleProvider(AIProvider):
             sender_email=message.sender.email,
             known_contact="yes" if message.sender.known_contact else "no",
             received_at=message.received_at,
-            body=message.body,
+            body=trim_body(message.body),
             thread_context=self._format_thread(thread, "No earlier messages in this thread."),
             known_facts=known_facts or "None provided.",
             protected_topics=self.protected_topics_block(),
@@ -603,7 +646,7 @@ class OpenAICompatibleProvider(AIProvider):
     ) -> DecisionSupportOutput:
         prompt = DECISION_SUPPORT_PROMPT_TEMPLATE.format(
             subject=message.subject,
-            body=message.body,
+            body=trim_body(message.body),
             known_facts=known_facts or "None provided.",
         )
         return self._call_model_with_json_retry(prompt, DecisionSupportOutput)
@@ -618,7 +661,7 @@ class OpenAICompatibleProvider(AIProvider):
             subject=message.subject,
             sender_name=message.sender.name,
             sender_email=message.sender.email,
-            body=message.body,
+            body=trim_body(message.body),
             thread_context=self._format_thread(thread, "This is the first message."),
             known_facts=known_facts or "None provided.",
         )
@@ -650,7 +693,7 @@ class OpenAICompatibleProvider(AIProvider):
             subject=message.subject,
             sender_name=message.sender.name,
             sender_email=message.sender.email,
-            body=message.body,
+            body=trim_body(message.body),
             thread_context=self._format_thread(thread, "This is the first message."),
             known_facts=known_facts or "None provided.",
             reply_subject=reply.reply_subject,

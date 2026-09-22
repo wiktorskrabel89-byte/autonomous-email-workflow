@@ -24,6 +24,32 @@ from email_workflow.models.state import ThreadState
 #   4. Safety defaults are stated as hard stops, not preferences.
 # ---------------------------------------------------------------------------
 
+# How much of an email body is put in front of the model.
+#
+# A marketing newsletter is mostly markup and repetition: one real one came to
+# 380,000 characters, roughly 95,000 tokens, and Groq refused the whole request
+# with "context_length_exceeded". That is a bad_request, which does not fail
+# over, so one fat advert could end a run.
+#
+# Nothing is lost by cutting it: what an email IS, and what it asks for, is
+# settled in the first few thousand characters. Anything after that is footers,
+# unsubscribe links and legal text.
+MAX_BODY_CHARS = 12000
+
+
+def trim_body(body: str, limit: int = MAX_BODY_CHARS) -> str:
+    """The part of an email worth showing a model, and a note if there is more."""
+    text = body or ""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rstrip()
+    left = len(text) - len(cut)
+    return (
+        f"{cut}\n\n[... {left:,} more characters of this message are not "
+        f"shown. It was cut to fit the model's context window.]"
+    )
+
+
 CLASSIFICATION_PROMPT_TEMPLATE = """You triage one incoming email for a busy person and decide what should happen to it.
 
 ## What you are given
